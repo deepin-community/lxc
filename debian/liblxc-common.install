@@ -1,0 +1,13 @@
+etc/apparmor.d
+usr/lib/*/lxc/rootfs
+usr/libexec/lxc/hooks
+usr/libexec/lxc/lxc-apparmor-load
+usr/libexec/lxc/lxc-monitord
+usr/libexec/lxc/lxc-user-nic
+usr/sbin/*
+usr/share/doc
+usr/share/lxc/config
+usr/share/lxc/hooks
+usr/share/lxc/lxc-patch.py
+usr/share/lxc/selinux
+usr/share/lxc/templates

@@ -1,0 +1,10 @@
+#!/bin/sh
+
+set -exu
+
+lxc-create -t busybox -n test
+lxc-ls -f
+test -f /var/lib/lxc/test/config
+lxc-destroy -n test
+lxc-ls -f
+! test -f /var/lib/lxc/test/config
