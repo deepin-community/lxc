@@ -20,6 +20,7 @@
 #include <grp.h>
 #include <linux/kdev_t.h>
 #include <linux/types.h>
+#include <libgen.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
@@ -44,6 +45,7 @@
 #include "mainloop.h"
 #include "memory_utils.h"
 #include "mount_utils.h"
+#include "open_utils.h"
 #include "storage/storage.h"
 #include "string_utils.h"
 #include "syscall_wrappers.h"
@@ -55,6 +57,10 @@
 
 #if !HAVE_STRLCAT
 #include "strlcat.h"
+#endif
+
+#if HAVE_DBUS
+#include <dbus/dbus.h>
 #endif
 
 lxc_log_define(cgfsng, cgroup);
@@ -139,7 +145,7 @@ static struct hierarchy *get_hierarchy(const struct cgroup_ops *ops, const char 
 	}
 
 	if (controller)
-		WARN("There is no useable %s controller", controller);
+		INFO("There is no useable %s controller", controller);
 	else
 		WARN("There is no empty unified cgroup hierarchy");
 
@@ -553,15 +559,20 @@ __cgfsng_ops static void cgfsng_payload_destroy(struct cgroup_ops *ops,
 	if (ret < 0)
 		WARN("Failed to detach bpf program from cgroup");
 
-	if (!list_empty(&handler->conf->id_map)) {
+	/*
+	 * Only do the user namespace dance if we have too. If the container's
+	 * monitor is root we can assume that it is privileged enough to remove
+	 * the cgroups it created when the container started.
+	 */
+	if (container_uses_namespace(handler, CLONE_NEWUSER) && !handler->am_root) {
 		struct generic_userns_exec_data wrap = {
 			.conf			= handler->conf,
 			.path_prune		= ops->container_limit_cgroup,
 			.hierarchies		= ops->hierarchies,
 			.origuid		= 0,
 		};
-		ret = userns_exec_1(handler->conf, cgroup_tree_remove_wrapper,
-				    &wrap, "cgroup_tree_remove_wrapper");
+		ret = userns_exec_full(handler->conf, cgroup_tree_remove_wrapper,
+				       &wrap, "cgroup_tree_remove_wrapper");
 	} else {
 		ret = cgroup_tree_remove(ops->hierarchies, ops->container_limit_cgroup);
 	}
@@ -574,7 +585,7 @@ __cgfsng_ops static void cgfsng_payload_destroy(struct cgroup_ops *ops,
 static bool cpuset1_cpus_initialize(int dfd_parent, int dfd_child,
 				    bool am_initialized)
 {
-	__do_free char *cpulist = NULL, *fpath = NULL, *isolcpus = NULL,
+	__do_free char *cpulist = NULL, *isolcpus = NULL,
 		       *offlinecpus = NULL, *posscpus = NULL;
 	__do_free __u32 *possmask = NULL;
 	int ret;
@@ -582,7 +593,7 @@ static bool cpuset1_cpus_initialize(int dfd_parent, int dfd_child,
 
 	posscpus = read_file_at(dfd_parent, "cpuset.cpus", PROTECT_OPEN, 0);
 	if (!posscpus)
-		return log_error_errno(false, errno, "Failed to read file \"%s\"", fpath);
+		return log_error_errno(false, errno, "Failed to read file %d/cpuset.cpus", dfd_parent);
 
 	if (file_exists(__ISOL_CPUS)) {
 		isolcpus = read_file_at(-EBADF, __ISOL_CPUS, PROTECT_OPEN, 0);
@@ -727,6 +738,7 @@ static int __cgroup_tree_create(int dfd_base, const char *path, mode_t mode,
 		 * it will be automatically zapped if we return early.
 		 */
 		dfd_cur = dfd_final;
+		TRACE("Opened%s cgroup %s as %d", !ret ? " newly created" : "", cur, dfd_cur);
 	}
 
 	/* The final cgroup must be succesfully creatd by us. */
@@ -944,6 +956,635 @@ static bool check_cgroup_dir_config(struct lxc_conf *conf)
 
 	/* namespace_dir may be empty */
 	return true;
+}
+
+#define SYSTEMD_SCOPE_FAILED 2
+#define SYSTEMD_SCOPE_UNSUPP 1
+#define SYSTEMD_SCOPE_SUCCESS 0
+
+#if HAVE_DBUS
+#define DESTINATION "org.freedesktop.systemd1"
+#define PATH "/org/freedesktop/systemd1"
+#define INTERFACE "org.freedesktop.systemd1.Manager"
+
+static bool dbus_threads_initialized = false;
+
+static void _dbus_connection_free(DBusConnection **conn) {
+	if (*conn) {
+		dbus_connection_unref(*conn);
+		*conn = NULL;
+	}
+}
+
+static void _dbus_message_free(DBusMessage **message)
+{
+	if (*message) {
+		dbus_message_unref(*message);
+		*message = NULL;
+	}
+}
+
+static bool systemd_cgroup_scope_ready(DBusConnection *connection, const char *scope_name)
+{
+	__attribute__((__cleanup__(_dbus_message_free))) DBusMessage* message = NULL;
+	DBusMessageIter iter;
+	char *unit, *result;
+
+	dbus_connection_read_write(connection, 0);
+	message = dbus_connection_pop_message(connection);
+	if (!message)
+		return log_debug(false, "Dbus error...");
+
+	if (!dbus_message_is_signal(message, INTERFACE, "JobRemoved"))
+		return false;
+
+	TRACE("got a JobRemoved signal.");
+	// "uoss" -> &id, &path, &unit, &result)
+	if (!dbus_message_iter_init(message, &iter)) // id
+		return log_debug(false, "Dbus error...");
+	if (DBUS_TYPE_UINT32 != dbus_message_iter_get_arg_type(&iter))
+		return log_debug(false, "Dbus error...");
+
+	if (!dbus_message_iter_next(&iter)) // path
+		return log_debug(false, "Dbus error...");
+
+	if (!dbus_message_iter_next(&iter)) // unit
+		return log_debug(false, "Dbus error...");
+	if (DBUS_TYPE_STRING != dbus_message_iter_get_arg_type(&iter))
+		return log_debug(false, "Dbus error...");
+	dbus_message_iter_get_basic(&iter, &unit);
+	if (strcmp(unit, scope_name) != 0)
+		return log_debug(false, "unit was '%s' not '%s'", unit, scope_name);
+
+	if (!dbus_message_iter_next(&iter)) // result
+		return log_debug(false, "Dbus error...");
+	if (DBUS_TYPE_STRING != dbus_message_iter_get_arg_type(&iter))
+		return log_debug(false, "Dbus error...");
+	dbus_message_iter_get_basic(&iter, &result);
+	if (strcmp(result, "done") != 0)
+		return log_debug(false, "JobRemoved signal received, but result was '%s' not done", result);
+
+	return true;
+}
+
+struct dbus_iter {
+	DBusMessageIter iter;
+	DBusMessageIter *parent;
+	bool set;
+};
+
+static bool open_dbus_container(DBusMessageIter *parent, int type, const char *sig, struct dbus_iter *sub)
+{
+	if (!dbus_message_iter_open_container(parent, type, sig, &sub->iter))
+		return false;
+	sub->set = true;
+	sub->parent = parent;
+	return true;
+}
+
+static bool close_dbus_container(struct dbus_iter *sub)
+{
+	sub->set = false;
+	return dbus_message_iter_close_container(sub->parent, &sub->iter);
+}
+
+static void abandon_dbus_container(struct dbus_iter *sub)
+{
+	if (!sub->set)
+		return;
+	dbus_message_iter_abandon_container(sub->parent, &sub->iter);
+	sub->set = false;
+}
+
+static bool dbus_append_array(struct DBusMessageIter *parent, const uint32_t *value, unsigned int len)
+{
+	__attribute__((__cleanup__(abandon_dbus_container))) struct dbus_iter iter_array = { 0 };
+	unsigned int i;
+
+	if (!open_dbus_container(parent, DBUS_TYPE_ARRAY, DBUS_TYPE_UINT32_AS_STRING, &iter_array))
+		return log_debug(false, "Dbus error opening array container");
+
+	for (i = 0; i < len; i++) {
+		if (!dbus_message_iter_append_basic(&iter_array.iter, DBUS_TYPE_UINT32, &(value[i]))) {
+			return log_debug(false, "Dbus error appending u32 to array");
+		}
+	}
+
+	if (!close_dbus_container(&iter_array))
+		return log_debug(false, "Dbus error closing array container");
+
+	return true;
+}
+
+// systemd wants ssa(sv)a(sa(sv)) ...  so after the a(sv) we have to
+// append an empty a(sa(sv)).
+static bool sd_boilerplate(DBusMessageIter *iter)
+{
+	DBusMessageIter array_iter;
+
+	if (!dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY,
+			DBUS_STRUCT_BEGIN_CHAR_AS_STRING
+			DBUS_TYPE_STRING_AS_STRING
+			DBUS_TYPE_ARRAY_AS_STRING
+			DBUS_STRUCT_BEGIN_CHAR_AS_STRING
+			DBUS_TYPE_STRING_AS_STRING
+			DBUS_TYPE_VARIANT_AS_STRING
+			DBUS_STRUCT_END_CHAR_AS_STRING
+			DBUS_STRUCT_END_CHAR_AS_STRING,
+			&array_iter))
+		return log_debug(false, "Dbus error...");
+
+	if (!dbus_message_iter_close_container(iter, &array_iter))
+		return log_debug(false, "Dbus error...");
+
+	return true;
+}
+
+static bool start_scope(DBusConnection *connection, const char *scope_name)
+{
+	const char *fail_name = "fail",
+		   *pids_name = "PIDs",
+		   *delegate_str = "Delegate",
+		   *collect_str = "CollectMode",
+		   *inactive_str = "inactive-or-failed";
+	__attribute__((__cleanup__(abandon_dbus_container))) struct dbus_iter array_iter = { 0 };
+	__attribute__((__cleanup__(abandon_dbus_container))) struct dbus_iter struct_iter = { 0 };
+	__attribute__((__cleanup__(abandon_dbus_container))) struct dbus_iter v_iter = { 0 };
+	DBusMessageIter iter;
+	DBusPendingCall* pending;
+	__attribute__((__cleanup__(_dbus_message_free))) DBusMessage* message = NULL;
+	uint32_t pid_uint;
+	dbus_bool_t bool_true = true;
+
+	message = dbus_message_new_method_call(DESTINATION, PATH, INTERFACE, "StartTransientUnit");
+	if (!message)
+		return log_debug(false, "Dbus error...");
+
+	dbus_message_iter_init_append (message, &iter);
+	// ss scope_name, fail
+	if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &scope_name))
+		return log_debug(false, "Dbus error...");
+	if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &fail_name))
+		return log_debug(false, "Dbus error...");
+
+	// a (sv):
+	//  "PIDs", "au", getpid(),
+	//  "Delegate", b, 1
+	// CollectMode, s, inactive-or-failed
+	if (!open_dbus_container(&iter, DBUS_TYPE_ARRAY,
+			DBUS_STRUCT_BEGIN_CHAR_AS_STRING
+			DBUS_TYPE_STRING_AS_STRING
+			DBUS_TYPE_VARIANT_AS_STRING
+			DBUS_STRUCT_END_CHAR_AS_STRING,
+			&array_iter))
+		return log_debug(false, "Dbus error...");
+
+	// "PIDs", "au", getpid()
+	if (!open_dbus_container(&array_iter.iter, DBUS_TYPE_STRUCT, NULL, &struct_iter))
+		return log_debug(false, "Dbus error...");
+
+	if (!dbus_message_iter_append_basic(&struct_iter.iter, DBUS_TYPE_STRING, &pids_name))
+		return log_debug(false, "Dbus error...");
+
+	if (!open_dbus_container(&struct_iter.iter, DBUS_TYPE_VARIANT,
+					DBUS_TYPE_ARRAY_AS_STRING DBUS_TYPE_UINT32_AS_STRING,
+					&v_iter))
+		return log_debug(false, "Dbus error...");
+
+	pid_uint = getpid();
+	if (!dbus_append_array(&v_iter.iter, &pid_uint, 1))
+		return log_debug(false, "Dbus error...");
+
+	if (!close_dbus_container(&v_iter))
+		return log_debug(false, "Dbus error...");
+	if (!close_dbus_container(&struct_iter))
+		return log_debug(false, "Dbus error...");
+	
+	//  "Delegate", b, 1
+	if (!open_dbus_container(&array_iter.iter, DBUS_TYPE_STRUCT, NULL, &struct_iter))
+		return log_debug(false, "Dbus error...");
+
+	if (!dbus_message_iter_append_basic(&struct_iter.iter, DBUS_TYPE_STRING, &delegate_str))
+		return log_debug(false, "Dbus error...");
+
+	if (!open_dbus_container(&struct_iter.iter, DBUS_TYPE_VARIANT, DBUS_TYPE_BOOLEAN_AS_STRING, &v_iter))
+		return log_debug(false, "Dbus error...");
+	if (!dbus_message_iter_append_basic(&v_iter.iter, DBUS_TYPE_BOOLEAN, &bool_true))
+		return log_debug(false, "Dbus error...");
+	if (!close_dbus_container(&v_iter))
+		return log_debug(false, "Dbus error...");
+	if (!close_dbus_container(&struct_iter))
+		return log_debug(false, "Dbus error...");
+
+	//  CollectMode, s, inactive-or-failed
+	if (!open_dbus_container(&array_iter.iter, DBUS_TYPE_STRUCT, NULL, &struct_iter))
+		return log_debug(false, "Dbus error...");
+
+	if (!dbus_message_iter_append_basic(&struct_iter.iter, DBUS_TYPE_STRING, &collect_str))
+		return log_debug(false, "Dbus error...");
+
+	if (!open_dbus_container(&struct_iter.iter, DBUS_TYPE_VARIANT, DBUS_TYPE_STRING_AS_STRING, &v_iter))
+		return log_debug(false, "Dbus error...");
+	if (!dbus_message_iter_append_basic(&v_iter.iter, DBUS_TYPE_STRING, &inactive_str))
+		return log_debug(false, "Dbus error...");
+	if (!close_dbus_container(&v_iter))
+		return log_debug(false, "Dbus error...");
+	if (!close_dbus_container(&struct_iter))
+		return log_debug(false, "Dbus error...");
+
+	if (!close_dbus_container(&array_iter))
+		return log_debug(false, "Dbus error...");
+
+	if (!sd_boilerplate(&iter))
+		return log_debug(false, "Dbus error...");
+
+	// send it
+	if (!dbus_connection_send_with_reply(connection, message, &pending, -1))
+		return log_debug(false, "Dbus error...");
+
+	if (!pending)
+		return log_debug(false, "Dbus error...");
+
+	dbus_connection_flush(connection);
+
+	dbus_pending_call_block(pending);
+
+	dbus_pending_call_unref(pending);
+
+	// Wait on a signal telling us the async scope request is handled
+	// TODO add a timeout
+	while (true) {
+		if (systemd_cgroup_scope_ready(connection, scope_name))
+			break;
+		nanosleep((const struct timespec[]){{0, 1000}}, NULL);
+		continue;
+	}
+
+	return true;
+}
+
+static DBusConnection *open_systemd(void)
+{
+	__do_free char *user_bus = NULL;
+	char *s = NULL;
+	DBusMessageIter iter;
+	DBusError dbus_error;
+	DBusConnection *connection = NULL;
+	__attribute__((__cleanup__(_dbus_message_free))) DBusMessage* message = NULL;
+	DBusPendingCall* pending;
+
+	dbus_error_init(&dbus_error);
+	user_bus = strdup("unix:path=/run/user/1000/bus"); // TODO get from $DBUS_SESSION_BUS_ADDRESS
+	if (!user_bus) {
+		return log_error(NULL, "Failed opening user dbus");
+	}
+
+	connection = dbus_connection_open(user_bus, &dbus_error);
+	if (!connection) {
+		DEBUG("Failed opening dbus connection: %s: %s",
+				dbus_error.name, dbus_error.message);
+		dbus_error_free(&dbus_error);
+		return NULL;
+	}
+	dbus_error_free(&dbus_error);
+
+	TRACE("Saying hello to systemd");
+	//message = dbus_message_new_method_call(DESTINATION, PATH, INTERFACE, "Hello");
+	message = dbus_message_new_method_call("org.freedesktop.DBus",
+						"/org/freedesktop/DBus",
+						"org.freedesktop.DBus",
+						"Hello");
+	if (!message) {
+		ERROR("Failed saying hello to systemd");
+		goto bad;
+	}
+	if (!dbus_connection_send_with_reply(connection, message, &pending, -1)) {
+		ERROR("Failed sending hello message to systemd");
+		goto bad;
+	}
+
+	if (!pending) {
+		ERROR("pending was NULL after saying hello to systemd");
+		goto bad;
+	}
+
+	dbus_connection_flush(connection);
+
+	dbus_message_unref(message);
+	message = NULL;
+
+	TRACE("Waiting systemd Hello for reply");
+
+	dbus_pending_call_block(pending);
+
+	message = dbus_pending_call_steal_reply(pending);
+	if (!message) {
+		ERROR("Failed stealing reply from systemd");
+		goto bad;
+	}
+
+	dbus_pending_call_unref(pending);
+
+	if (!dbus_message_iter_init(message, &iter)) {
+		ERROR("Failed parsing reply from systemd");
+		goto bad;
+	}
+
+	if (DBUS_TYPE_STRING != dbus_message_iter_get_arg_type(&iter)) {
+		ERROR("systemd's reply was %d not DBUS_TYPE_STRING (%d)", dbus_message_iter_get_arg_type(&iter), DBUS_TYPE_STRING);
+		goto bad;
+	}
+	dbus_message_iter_get_basic(&iter, &s);
+	TRACE("reply came from systemd: '%s'", s);
+
+	return connection;
+
+bad:
+	dbus_connection_unref(connection);
+	return NULL;
+}
+
+static bool enter_scope(char *scope_name, pid_t pid)
+{
+	const char *init_name = "/init";
+	__attribute__((__cleanup__(_dbus_connection_free))) DBusConnection *connection = NULL;
+	__attribute__((__cleanup__(_dbus_message_free))) DBusMessage* message = NULL;
+	DBusMessageIter iter;
+	DBusPendingCall* pending;
+	uint32_t pid_uint = pid;
+
+	if (!dbus_threads_initialized) {
+		/* tell dbus to do struct locking for thread safety */
+		dbus_threads_init_default();
+		dbus_threads_initialized = true;
+	}
+
+	TRACE("enter_scope: calling open_systemd");
+	connection = open_systemd();
+	if (connection == NULL)
+		return log_error(false, "Failed opening dbus connection");
+
+	TRACE("enter_scope: subscribing to signals");
+	message = dbus_message_new_method_call(DESTINATION, PATH, INTERFACE, "AttachProcessesToUnit");
+	if (!message)
+		return log_debug(false, "Dbus error...");
+
+	dbus_message_iter_init_append (message, &iter);
+	if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &scope_name))
+		return log_debug(false, "Dbus error...");
+	if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &init_name))
+		return log_debug(false, "Dbus error...");
+	if (!dbus_append_array(&iter, &pid_uint, 1))
+		return log_debug(false, "Dbus error...");
+
+	if (!dbus_connection_send_with_reply(connection, message, &pending, DBUS_TIMEOUT_INFINITE))
+		return log_debug(false, "Dbus error...");
+
+	if (!pending)
+		return log_debug(false, "Dbus error...");
+
+	dbus_connection_flush(connection);
+
+	dbus_pending_call_block(pending);
+
+	dbus_message_unref(message);
+	message = NULL;
+
+	message = dbus_pending_call_steal_reply(pending);
+	if (!message)
+		return log_debug(false, "Dbus error - NULL reply");
+
+	dbus_pending_call_unref(pending);
+
+	return true;
+}
+
+static bool string_pure_unified_system(char *contents)
+{
+	char *p;
+	bool first_line_read = false;
+
+	lxc_iterate_parts(p, contents, "\n") {
+		if (first_line_read) // if >1 line, this is not pure unified
+			return false;
+		first_line_read = true;
+
+		if (strlen(p) > 3 && strncmp(p, "0:", 2) == 0)
+			return true;
+	}
+
+	return false;
+}
+
+static bool enable_controllers_delegation(int fd_dir, char *cg)
+{
+	__do_free char *rbuf = NULL;
+	__do_free char *wbuf = NULL;
+	__do_free_string_list char **cpulist = NULL;
+	char *controller;
+	size_t full_len = 0;
+	bool first = true;
+	int ret;
+
+	rbuf = read_file_at(fd_dir, "cgroup.controllers", PROTECT_OPEN, 0);
+	if (!rbuf)
+		return false;
+
+	lxc_iterate_parts(controller, rbuf, " ") {
+		full_len += strlen(controller) + 2;
+		wbuf = must_realloc(wbuf, full_len + 1);
+		if (first) {
+			wbuf[0] = '\0';
+			first = false;
+		} else {
+			(void)strlcat(wbuf, " ", full_len + 1);
+		}
+		strlcat(wbuf, "+", full_len + 1);
+		strlcat(wbuf, controller, full_len + 1);
+	}
+	if (!wbuf)
+		return log_debug(true, "No controllers to delegate!");
+
+	ret = lxc_writeat(fd_dir, "cgroup.subtree_control", wbuf, strlen(wbuf));
+	if (ret < 0)
+		return log_error_errno(false, errno, "Failed to write \"%s\" to %s/cgroup.subtree_control", wbuf, cg);
+
+	return true;
+}
+
+/*
+ * Only call get_current_unified_cgroup() when we are in a pure
+ * unified (v2-only) cgroup
+ */
+static char *get_current_unified_cgroup(void)
+{
+	__do_free char *buf = NULL;
+	__do_free_string_list char **list = NULL;
+	char *p;
+
+	buf = read_file_at(-EBADF, "/proc/self/cgroup", PROTECT_OPEN, 0);
+	if (!buf)
+		return NULL;
+
+	if (!string_pure_unified_system(buf))
+		return NULL;
+
+	// 0::/user.slice/user-1000.slice/session-136.scope
+	// Get past the "0::"
+	p = buf;
+	if (strnequal(p, "0::", STRLITERALLEN("0::")))
+		p += STRLITERALLEN("0::");
+
+	return strdup(p);
+}
+
+static bool pure_unified_system(void)
+{
+	__do_free char *buf = NULL;
+
+	buf = read_file_at(-EBADF, "/proc/self/cgroup", PROTECT_OPEN, 0);
+	if (!buf)
+		return false;
+
+	return string_pure_unified_system(buf);
+}
+
+/*
+ * systemd places us in say .../lxc-1.scope.  We create lxc-1.scope/init,
+ * move ourselves to there, then enable controllers in lxc-1.scope
+ */
+static bool move_and_delegate_unified(char *parent_cgroup)
+{
+	__do_free char *buf = NULL;
+	__do_close int fd_parent = -EBADF;
+	int ret;
+
+	fd_parent = open_at(-EBADF, parent_cgroup, O_DIRECTORY, 0, 0);
+	if (fd_parent < 0)
+		return syserror_ret(false, "Failed opening cgroup dir \"%s\"", parent_cgroup);
+
+	ret = mkdirat(fd_parent, "init", 0755);
+	if (ret < 0 && errno != EEXIST)
+		return syserror_ret(false, "Failed to create \"%d/init\" cgroup", fd_parent);
+
+	buf = read_file_at(fd_parent, "cgroup.procs", PROTECT_OPEN, 0);
+	if (!buf)
+		return false;
+
+	ret = lxc_writeat(fd_parent, "init/cgroup.procs", buf, strlen(buf));
+	if (ret)
+		return syserror_ret(false, "Failed to escape to cgroup \"init/cgroup.procs\"");
+
+	/* enable controllers in parent_cgroup */
+	return enable_controllers_delegation(fd_parent, parent_cgroup);
+}
+
+#define JOBREMOVED_RULE \
+	"type='signal',sender='" DESTINATION "',path='" PATH \
+	"',interface='" INTERFACE "',member='JobRemoved'"
+
+static int unpriv_systemd_create_scope(struct cgroup_ops *ops, struct lxc_conf *conf)
+{
+	__do_free char *full_scope_name = NULL;
+	__do_free char *user_bus = NULL;
+	__do_free char *fs_cg_path = NULL;
+	__attribute__((__cleanup__(_dbus_message_free))) DBusMessage* message = NULL;
+	DBusError dbus_error;
+	int idx = 0, r;
+	__attribute__((__cleanup__(_dbus_connection_free))) DBusConnection *connection = NULL;
+	unsigned int len;
+
+	if (geteuid() == 0)
+		return log_info(SYSTEMD_SCOPE_UNSUPP, "Running privileged, not using a systemd unit");
+
+	// Pure_unified_layout() can't be used as that info is not yet setup.  At
+	// the same time, we don't want to calculate current cgroups until after
+	// we optionally enter a new systemd user scope.  So let's just do a quick
+	// check for pure unified cgroup system: single line /proc/self/cgroup with
+	// only index '0:'
+	if (!pure_unified_system())
+		return log_info(SYSTEMD_SCOPE_UNSUPP, "Not in unified layout, not using a systemd unit");
+
+	if (!dbus_threads_initialized) {
+		/* tell dbus to do struct locking for thread safety */
+		dbus_threads_init_default();
+		dbus_threads_initialized = true;
+	}
+
+	connection = open_systemd();
+	if (connection == NULL)
+		return log_error(false, "Failed opening dbus connection");
+
+	message = dbus_message_new_method_call(DESTINATION, PATH, INTERFACE, "Subscribe");
+	if (!message)
+		return log_error(SYSTEMD_SCOPE_FAILED, "Failed subscribing to dbus signals");
+
+	dbus_error_init(&dbus_error);
+
+	if (!dbus_connection_send(connection, message, NULL)) {
+		INFO("error sending signal subscribe message");
+		return log_error(SYSTEMD_SCOPE_FAILED, "error sending signal subscribe message");
+	}
+
+	dbus_connection_flush(connection);
+
+	// subscribe to JobRemoved signal from systemd.  The start_scope()
+	// function will listen for this over connection.
+	dbus_bus_add_match(connection, JOBREMOVED_RULE, &dbus_error);
+	dbus_connection_flush(connection);
+	if (dbus_error_is_set(&dbus_error)) { 
+		ERROR("unpriv_systemd_create_scope: MATCH ERROR (%s)", dbus_error.message);
+		dbus_error_free(&dbus_error);
+		return SYSTEMD_SCOPE_FAILED;
+	}
+
+	// "lxc-" + (conf->name) + "-NN" + ".scope" + '\0'
+	len = STRLITERALLEN("lxc-") + strlen(conf->name) + 3 + STRLITERALLEN(".scope") + 1;
+	full_scope_name = malloc(len);
+	if (!full_scope_name)
+		return syserror("Out of memory");
+
+	do {
+		TRACE("unpriv_systemd_create_scope: trying idx %d", idx);
+		r = strnprintf(full_scope_name, len, "lxc-%s-%d.scope", conf->name, idx);
+		if (r < 0)
+			return log_error_errno(SYSTEMD_SCOPE_FAILED, errno, "Failed to build scope name for \"%s\"", conf->name);
+		if (start_scope(connection, full_scope_name)) {
+			conf->cgroup_meta.systemd_scope = get_current_unified_cgroup();
+			if (!conf->cgroup_meta.systemd_scope)
+				return log_trace(SYSTEMD_SCOPE_FAILED, "Out of memory");
+			fs_cg_path = must_make_path("/sys/fs/cgroup", conf->cgroup_meta.systemd_scope, NULL);
+			if (!move_and_delegate_unified(fs_cg_path))
+				return log_error(SYSTEMD_SCOPE_FAILED, "Failed delegating the controllers to our cgroup");
+			return log_trace(SYSTEMD_SCOPE_SUCCESS, "Created systemd scope %s", full_scope_name);
+		}
+		idx++;
+	} while (idx < 99);
+
+	return SYSTEMD_SCOPE_FAILED; // failed, let's try old-school after all
+}
+#else /* HAVE_DBUS */
+
+static int unpriv_systemd_create_scope(struct cgroup_ops *ops, struct lxc_conf *conf)
+{
+	return SYSTEMD_SCOPE_UNSUPP;
+}
+
+#endif /* HAVE_DBUS */
+
+// Return a duplicate of cgroup path @cg without leading /, so
+// that caller can own+free it and be certain it's not abspath.
+static char *cgroup_relpath(char *cg)
+{
+	char *p;
+
+	if (!cg || strequal(cg, "/"))
+		return NULL;
+	p = strdup(deabs(cg));
+	if (!p)
+		return ERR_PTR(-ENOMEM);
+
+	return p;
 }
 
 __cgfsng_ops static bool cgfsng_monitor_create(struct cgroup_ops *ops, struct lxc_handler *handler)
@@ -1175,14 +1816,19 @@ __cgfsng_ops static bool cgfsng_monitor_enter(struct cgroup_ops *ops,
 		if (ret)
 			return log_error_errno(false, errno, "Failed to enter cgroup %d", h->dfd_mon);
 
-		TRACE("Moved monitor into cgroup %d", h->dfd_mon);
+		TRACE("Moved monitor (%d) into cgroup %d", handler->monitor_pid, h->dfd_mon);
 
 		if (handler->transient_pid <= 0)
 			continue;
 
 		ret = lxc_writeat(h->dfd_mon, "cgroup.procs", transient, transient_len);
-		if (ret)
-			return log_error_errno(false, errno, "Failed to enter cgroup %d", h->dfd_mon);
+		if (ret) {
+			// TODO: probably ask systemd to do the move for us instead
+			if (!handler->conf->cgroup_meta.systemd_scope)
+				return log_error_errno(false, errno, "Failed to enter pid %d into cgroup %d", handler->transient_pid, h->dfd_mon);
+			else
+				TRACE("Failed moving transient process into cgroup %d", h->dfd_mon);
+		}
 
 		TRACE("Moved transient process into cgroup %d", h->dfd_mon);
 
@@ -1487,7 +2133,8 @@ static int __cgroupfs_mount(int cgroup_automount_type, struct hierarchy *h,
 	flags |= MOUNT_ATTR_RELATIME;
 
 	if ((cgroup_automount_type == LXC_AUTO_CGROUP_RO) ||
-	    (cgroup_automount_type == LXC_AUTO_CGROUP_FULL_RO))
+	    (cgroup_automount_type == LXC_AUTO_CGROUP_FULL_RO) ||
+	    (cgroup_automount_type == LXC_AUTO_CGROUP2_RO))
 		flags |= MOUNT_ATTR_RDONLY;
 
 	if (is_unified_hierarchy(h))
@@ -1618,6 +2265,12 @@ __cgfsng_ops static bool cgfsng_mount(struct cgroup_ops *ops,
 	case LXC_AUTO_CGROUP_FULL_MIXED:
 		TRACE("Full mixed cgroup mounts requested");
 		break;
+	case LXC_AUTO_CGROUP2_RW:
+		TRACE("Read-write cgroup2 mount requested");
+		break;
+	case LXC_AUTO_CGROUP2_RO:
+		TRACE("Read-only cgroup2 mount requested");
+		break;
 	default:
 		return log_error_errno(false, EINVAL, "Invalid cgroup mount options specified");
 	}
@@ -1647,8 +2300,13 @@ __cgfsng_ops static bool cgfsng_mount(struct cgroup_ops *ops,
 		return log_trace(true, "Mounting cgroups not requested or needed");
 
 	/* This is really the codepath that we want. */
-	if (pure_unified_layout(ops)) {
+	if (pure_unified_layout(ops) ||
+	    (cgroup_automount_type == LXC_AUTO_CGROUP2_RW) ||
+	    (cgroup_automount_type == LXC_AUTO_CGROUP2_RO)) {
 		__do_close int dfd_mnt_unified = -EBADF;
+
+		if (!ops->unified)
+			return log_error_errno(false, EINVAL, "No unified cgroup hierarchy mounted on the host");
 
 		dfd_mnt_unified = open_at(rootfs->dfd_mnt, DEFAULT_CGROUP_MOUNTPOINT_RELATIVE,
 					  PROTECT_OPATH_DIRECTORY, PROTECT_LOOKUP_BENEATH_XDEV, 0);
@@ -1684,6 +2342,11 @@ __cgfsng_ops static bool cgfsng_mount(struct cgroup_ops *ops,
 			 * 10. cgroup-full:rw:force    -> Not supported.
 			 * 11. cgroup-full:ro:force    -> Not supported.
 			 * 12. cgroup-full:mixed:force -> Not supported.
+			 *
+			 * 13. cgroup2		-> No-op; init system responsible for mounting.
+			 * 14. cgroup2:ro	-> No-op; init system responsible for mounting.
+			 * 15. cgroup2:force	-> Mount the cgroup2 filesystem read-write
+			 * 16. cgroup2:ro:force	-> Mount the cgroup2 filesystem read-only
 			 */
 			ret = cgroupfs_mount(cgroup_automount_type, ops->unified, rootfs, dfd_mnt_unified, "");
 			if (ret < 0)
@@ -1697,25 +2360,11 @@ __cgfsng_ops static bool cgfsng_mount(struct cgroup_ops *ops,
 			 * Or the user requested to keep the cgroup namespace
 			 * of the host or another container.
 			 */
-			if (wants_force_mount) {
-				/*
-				 * 1. cgroup:rw:force    -> Bind-mount the cgroup2 filesystem writable.
-				 * 2. cgroup:ro:force    -> Bind-mount the cgroup2 filesystem read-only.
-				 * 3. cgroup:mixed:force -> bind-mount the cgroup2 filesystem and
-				 *                          and make the parent directory of the
-				 *                          container's cgroup read-only but the
-				 *                          container's cgroup writable.
-                                 *
-				 * 10. cgroup-full:rw:force    ->
-				 * 11. cgroup-full:ro:force    ->
-				 * 12. cgroup-full:mixed:force ->
-				 */
-				errno = EOPNOTSUPP;
+			errno = EOPNOTSUPP;
+			if (wants_force_mount)
 				SYSWARN("Force-mounting the unified cgroup hierarchy without cgroup namespace support is currently not supported");
-			} else {
-				errno = EOPNOTSUPP;
+			else
 				SYSWARN("Mounting the unified cgroup hierarchy without cgroup namespace support is currently not supported");
-			}
 		}
 
 		return syserror_ret(false, "Failed to mount cgroups");
@@ -1729,15 +2378,15 @@ __cgfsng_ops static bool cgfsng_mount(struct cgroup_ops *ops,
 	if (can_use_mount_api()) {
 		fd_fs = fs_prepare("tmpfs", -EBADF, "", 0, 0);
 		if (fd_fs < 0)
-			return log_error_errno(-errno, errno, "Failed to create new filesystem context for tmpfs");
+			return log_error_errno(false, errno, "Failed to create new filesystem context for tmpfs");
 
 		ret = fs_set_property(fd_fs, "mode", "0755");
 		if (ret < 0)
-			return log_error_errno(-errno, errno, "Failed to mount tmpfs onto %d(dev)", fd_fs);
+			return log_error_errno(false, errno, "Failed to mount tmpfs onto %d(dev)", fd_fs);
 
 		ret = fs_set_property(fd_fs, "size", "10240k");
 		if (ret < 0)
-			return log_error_errno(-errno, errno, "Failed to mount tmpfs onto %d(dev)", fd_fs);
+			return log_error_errno(false, errno, "Failed to mount tmpfs onto %d(dev)", fd_fs);
 
 		ret = fs_attach(fd_fs, rootfs->dfd_mnt, DEFAULT_CGROUP_MOUNTPOINT_RELATIVE,
 				PROTECT_OPATH_DIRECTORY, PROTECT_LOOKUP_BENEATH_XDEV,
@@ -1796,7 +2445,7 @@ __cgfsng_ops static bool cgfsng_mount(struct cgroup_ops *ops,
 		hierarchy_mnt = must_make_path(cgroup_root, h->at_mnt, NULL);
 		path2 = must_make_path(hierarchy_mnt, h->at_base,
 				       ops->container_cgroup, NULL);
-		ret = mkdir_p(path2, 0755);
+		ret = lxc_mkdir_p(path2, 0755);
 		if (ret < 0 && (errno != EEXIST))
 			return false;
 
@@ -2140,7 +2789,7 @@ static int cgroup_attach_leaf(const struct lxc_conf *conf, int unified_fd, pid_t
 }
 
 static int cgroup_attach_create_leaf(const struct lxc_conf *conf,
-				     int unified_fd, int *sk_fd)
+				     int unified_fd, int *sk_fd, bool unprivileged)
 {
 	__do_close int sk = *sk_fd, target_fd0 = -EBADF, target_fd1 = -EBADF;
 	int target_fds[2];
@@ -2149,37 +2798,81 @@ static int cgroup_attach_create_leaf(const struct lxc_conf *conf,
 	/* Create leaf cgroup. */
 	ret = mkdirat(unified_fd, ".lxc", 0755);
 	if (ret < 0 && errno != EEXIST)
-		return log_error_errno(-1, errno, "Failed to create leaf cgroup \".lxc\"");
+		return syserror("Failed to create leaf cgroup \".lxc\"");
 
-	target_fd0 = open_at(unified_fd, ".lxc/cgroup.procs", PROTECT_OPEN_W, PROTECT_LOOKUP_BENEATH, 0);
-	if (target_fd0 < 0)
-		return log_error_errno(-errno, errno, "Failed to open \".lxc/cgroup.procs\"");
-	target_fds[0] = target_fd0;
+	if (unprivileged) {
+		target_fd0 = open_at(unified_fd, ".lxc/cgroup.procs", PROTECT_OPEN_W, PROTECT_LOOKUP_BENEATH, 0);
+		if (target_fd0 < 0)
+			return syserror("Failed to open \".lxc/cgroup.procs\"");
+		target_fds[0] = target_fd0;
 
-	target_fd1 = open_at(unified_fd, "cgroup.procs", PROTECT_OPEN_W, PROTECT_LOOKUP_BENEATH, 0);
-	if (target_fd1 < 0)
-		return log_error_errno(-errno, errno, "Failed to open \".lxc/cgroup.procs\"");
-	target_fds[1] = target_fd1;
+		target_fd1 = open_at(unified_fd, "cgroup.procs", PROTECT_OPEN_W, PROTECT_LOOKUP_BENEATH, 0);
+		if (target_fd1 < 0)
+			return syserror("Failed to open \".lxc/cgroup.procs\"");
+		target_fds[1] = target_fd1;
 
-	ret = lxc_abstract_unix_send_fds(sk, target_fds, 2, NULL, 0);
-	if (ret <= 0)
-		return log_error_errno(-errno, errno, "Failed to send \".lxc/cgroup.procs\" fds %d and %d",
-				       target_fd0, target_fd1);
+		ret = lxc_abstract_unix_send_fds(sk, target_fds, 2, NULL, 0);
+		if (ret <= 0)
+			return syserror("Failed to send \".lxc/cgroup.procs\" fds %d and %d",
+					target_fd0, target_fd1);
 
-	return log_debug(0, "Sent target cgroup fds %d and %d", target_fd0, target_fd1);
+		TRACE("Sent cgroup file descriptors %d and %d", target_fd0, target_fd1);
+	} else {
+		ret = lxc_abstract_unix_send_credential(sk, NULL, 0);
+		if (ret < 0)
+			return syserror("Failed to inform parent that we are done setting up mounts");
+
+		TRACE("Informed parent process that cgroup has been created");
+	}
+
+	return 0;
 }
 
 static int cgroup_attach_move_into_leaf(const struct lxc_conf *conf,
-					int *sk_fd, pid_t pid)
+					const char *lxcpath,
+					int unified_fd, int *sk_fd, pid_t pid,
+					bool unprivileged)
 {
 	__do_close int sk = *sk_fd, target_fd0 = -EBADF, target_fd1 = -EBADF;
 	char pidstr[INTTYPE_TO_STRLEN(int64_t) + 1];
 	size_t pidstr_len;
+	__do_free char *scope = NULL;
 	ssize_t ret;
 
-	ret = lxc_abstract_unix_recv_two_fds(sk, &target_fd0, &target_fd1);
-	if (ret < 0)
-		return log_error_errno(-1, errno, "Failed to receive target cgroup fd");
+#if HAVE_DBUS
+	scope = lxc_cmd_get_systemd_scope(conf->name, lxcpath);
+	if (scope) {
+		TRACE("%s:%s is running under systemd-created scope '%s'.  Attaching...", lxcpath, conf->name, scope);
+		if (enter_scope(scope, pid))
+			TRACE("Successfully entered scope '%s'", scope);
+		else
+			ERROR("Failed entering scope '%s'", scope);
+	} else {
+		TRACE("%s:%s is not running under a systemd-created scope", lxcpath, conf->name);
+	}
+#endif
+
+	if (unprivileged) {
+		ret = lxc_abstract_unix_recv_two_fds(sk, &target_fd0, &target_fd1);
+		if (ret < 0)
+			return log_error_errno(-1, errno, "Failed to receive target cgroup fd");
+	} else {
+		ret = lxc_abstract_unix_rcv_credential(sk, NULL, 0);
+		if (ret < 0)
+			return syserror("Failed to receive notification from parent process");
+
+		TRACE("Child process informed us that cgroup has been created");
+
+		target_fd0 = open_at(unified_fd, ".lxc/cgroup.procs", PROTECT_OPEN_W, PROTECT_LOOKUP_BENEATH, 0);
+		if (target_fd0 < 0)
+			return syserror("Failed to open \".lxc/cgroup.procs\"");
+
+		target_fd1 = open_at(unified_fd, "cgroup.procs", PROTECT_OPEN_W, PROTECT_LOOKUP_BENEATH, 0);
+		if (target_fd1 < 0)
+			return syserror("Failed to open \".lxc/cgroup.procs\"");
+
+		TRACE("Opened target cgroup file descriptors %d and %d", target_fd0, target_fd1);
+	}
 
 	pidstr_len = sprintf(pidstr, INT64_FMT, (int64_t)pid);
 
@@ -2191,28 +2884,29 @@ static int cgroup_attach_move_into_leaf(const struct lxc_conf *conf,
 	if (ret > 0 && (size_t)ret == pidstr_len)
 		return log_debug(0, "Moved process into target cgroup via fd %d", target_fd1);
 
-	return log_debug_errno(-1, errno, "Failed to move process into target cgroup via fd %d and %d",
-			       target_fd0, target_fd1);
+	return syserror("Failed to move process into target cgroup via fd %d and %d", target_fd0, target_fd1);
 }
 
 struct userns_exec_unified_attach_data {
 	const struct lxc_conf *conf;
+	const char *lxcpath;
 	int unified_fd;
 	int sk_pair[2];
 	pid_t pid;
+	bool unprivileged;
 };
 
 static int cgroup_unified_attach_child_wrapper(void *data)
 {
 	struct userns_exec_unified_attach_data *args = data;
 
-	if (!args->conf || args->unified_fd < 0 || args->pid <= 0 ||
-	    args->sk_pair[0] < 0 || args->sk_pair[1] < 0)
+	if (!args->conf || !args->lxcpath || args->unified_fd < 0 ||
+	    args->pid <= 0 || args->sk_pair[0] < 0 || args->sk_pair[1] < 0)
 		return ret_errno(EINVAL);
 
 	close_prot_errno_disarm(args->sk_pair[0]);
 	return cgroup_attach_create_leaf(args->conf, args->unified_fd,
-					 &args->sk_pair[1]);
+					 &args->sk_pair[1], args->unprivileged);
 }
 
 static int cgroup_unified_attach_parent_wrapper(void *data)
@@ -2224,8 +2918,10 @@ static int cgroup_unified_attach_parent_wrapper(void *data)
 		return ret_errno(EINVAL);
 
 	close_prot_errno_disarm(args->sk_pair[1]);
-	return cgroup_attach_move_into_leaf(args->conf, &args->sk_pair[0],
-					    args->pid);
+	return cgroup_attach_move_into_leaf(args->conf, args->lxcpath,
+					    args->unified_fd,
+					    &args->sk_pair[0], args->pid,
+					    args->unprivileged);
 }
 
 /* Technically, we're always at a delegation boundary here (This is especially
@@ -2252,6 +2948,7 @@ static int __cg_unified_attach(const struct hierarchy *h,
 	ret = cgroup_attach(conf, name, lxcpath, pid);
 	if (ret == 0)
 		return log_trace(0, "Attached to unified cgroup via command handler");
+	TRACE("__cg_unified_attach: cgroup_attach returned %d", ret);
 	if (!ERRNO_IS_NOT_SUPPORTED(ret) && ret != -ENOCGROUP2)
 		return log_error_errno(ret, errno, "Failed to attach to unified cgroup");
 
@@ -2260,6 +2957,7 @@ static int __cg_unified_attach(const struct hierarchy *h,
 	/* not running */
 	if (!cgroup)
 		return 0;
+	TRACE("lxc_cmd_get_cgroup_path returned %s", cgroup);
 
 	path = make_cgroup_path(h, cgroup, NULL);
 
@@ -2272,6 +2970,8 @@ static int __cg_unified_attach(const struct hierarchy *h,
 			.conf		= conf,
 			.unified_fd	= unified_fd,
 			.pid		= pid,
+			.unprivileged	= am_guest_unpriv(),
+			.lxcpath	= lxcpath,
 		};
 
 		ret = socketpair(PF_LOCAL, SOCK_STREAM | SOCK_CLOEXEC, 0, args.sk_pair);
@@ -2328,7 +3028,7 @@ __cgfsng_ops static bool cgfsng_attach(struct cgroup_ops *ops,
 			 * controller after the container has started and so
 			 * the container doesn't make use of this controller.
 			 *
-			 * Link: https://github.com/lxc/lxd/issues/8577
+			 * Link: https://github.com/canonical/lxd/issues/8577
 			 */
 			TRACE("Skipping unused %s controller", maybe_empty(h->controllers[0]));
 			continue;
@@ -2887,7 +3587,7 @@ static bool __cgfsng_delegate_controllers(struct cgroup_ops *ops, const char *cg
 		(void)strlcat(add_controllers, "+", full_len + 1);
 		(void)strlcat(add_controllers, *it, full_len + 1);
 
-		if ((it + 1) && *(it + 1))
+		if (*(it + 1))
 			(void)strlcat(add_controllers, " ", full_len + 1);
 	}
 
@@ -3113,11 +3813,22 @@ static const char *stable_order(const char *controllers)
 	return unprefix(controllers);
 }
 
+#define CGFSNG_LAYOUT_LEGACY	BIT(0)
+#define CGFSNG_LAYOUT_UNIFIED	BIT(1)
+
 static int __initialize_cgroups(struct cgroup_ops *ops, bool relative,
-				bool unprivileged)
+				bool unprivileged, struct lxc_conf *conf)
 {
 	__do_free char *cgroup_info = NULL;
+	unsigned int layout_mask = 0;
+	int ret;
 	char *it;
+
+	ret = unpriv_systemd_create_scope(ops, conf);
+	if (ret < 0)
+		return ret_set_errno(false, ret);
+	else if (ret == 0)
+		TRACE("Entered an unpriv systemd scope");
 
 	/*
 	 * Root spawned containers escape the current cgroup, so use init's
@@ -3136,7 +3847,7 @@ static int __initialize_cgroups(struct cgroup_ops *ops, bool relative,
 		__do_free_string_list char **controller_list = NULL,
 					   **delegate = NULL;
 		char *line;
-		int dfd, ret, type;
+		int dfd, type;
 
 		/* Handle the unified cgroup hierarchy. */
 		line = it;
@@ -3144,8 +3855,12 @@ static int __initialize_cgroups(struct cgroup_ops *ops, bool relative,
 			char *unified_mnt;
 
 			type = UNIFIED_HIERARCHY;
+			layout_mask |= CGFSNG_LAYOUT_UNIFIED;
 
-			current_cgroup = current_unified_cgroup(relative, line);
+			if (conf->cgroup_meta.systemd_scope)
+				current_cgroup = cgroup_relpath(conf->cgroup_meta.systemd_scope);
+			if (IS_ERR_OR_NULL(current_cgroup))
+				current_cgroup = current_unified_cgroup(relative, line);
 			if (IS_ERR(current_cgroup))
 				return PTR_ERR(current_cgroup);
 
@@ -3166,6 +3881,12 @@ static int __initialize_cgroups(struct cgroup_ops *ops, bool relative,
 				SYSTRACE("Unified cgroup not mounted");
 				continue;
 			}
+
+			if (!fhas_fs_type(dfd_mnt, CGROUP2_SUPER_MAGIC)) {
+				SYSTRACE("Opened file descriptor %d is not a cgroup2 mountpoint", dfd_mnt);
+				continue;
+			}
+
 			dfd = dfd_mnt;
 
 			if (!is_empty_string(current_cgroup)) {
@@ -3202,6 +3923,7 @@ static int __initialize_cgroups(struct cgroup_ops *ops, bool relative,
 			char *__controllers, *__current_cgroup;
 
 			type = LEGACY_HIERARCHY;
+			layout_mask |= CGFSNG_LAYOUT_LEGACY;
 
 			__controllers = strchr(line, ':');
 			if (!__controllers)
@@ -3230,6 +3952,12 @@ static int __initialize_cgroups(struct cgroup_ops *ops, bool relative,
 				SYSTRACE("%s not mounted", controllers);
 				continue;
 			}
+
+			if (!fhas_fs_type(dfd_mnt, CGROUP_SUPER_MAGIC)) {
+				SYSTRACE("Opened file descriptor %d is not a cgroup mountpoint", dfd_mnt);
+				continue;
+			}
+
 			dfd = dfd_mnt;
 
 			if (!abspath(__current_cgroup))
@@ -3306,6 +4034,28 @@ static int __initialize_cgroups(struct cgroup_ops *ops, bool relative,
 		}
 	}
 
+	/*
+	 * If we still don't know the cgroup layout at this point it means we
+	 * have not found any writable cgroup hierarchies. Infer the layout
+	 * from the layout bitmask we created when parsing the cgroups.
+	 *
+	 * Keep the ordering in the switch otherwise the bistmask-based
+	 * matching won't work.
+	 */
+	if (ops->cgroup_layout == CGROUP_LAYOUT_UNKNOWN) {
+		switch (layout_mask) {
+		case (CGFSNG_LAYOUT_LEGACY | CGFSNG_LAYOUT_UNIFIED):
+			ops->cgroup_layout = CGROUP_LAYOUT_HYBRID;
+			break;
+		case CGFSNG_LAYOUT_LEGACY:
+			ops->cgroup_layout = CGROUP_LAYOUT_LEGACY;
+			break;
+		case CGFSNG_LAYOUT_UNIFIED:
+			ops->cgroup_layout = CGROUP_LAYOUT_UNIFIED;
+			break;
+		}
+	}
+
 	if (!controllers_available(ops))
 		return syserror_set(-ENOENT, "One or more requested controllers unavailable or not delegated");
 
@@ -3354,7 +4104,7 @@ static int initialize_cgroups(struct cgroup_ops *ops, struct lxc_conf *conf)
 	 */
 	ops->dfd_mnt = dfd;
 
-	ret = __initialize_cgroups(ops, conf->cgroup_meta.relative, !list_empty(&conf->id_map));
+	ret = __initialize_cgroups(ops, conf->cgroup_meta.relative, !list_empty(&conf->id_map), conf);
 	if (ret < 0)
 		return syserror_ret(ret, "Failed to initialize cgroups");
 
@@ -3427,7 +4177,7 @@ struct cgroup_ops *cgroup_ops_init(struct lxc_conf *conf)
 	return move_ptr(cgfsng_ops);
 }
 
-static int __unified_attach_fd(const struct lxc_conf *conf, int fd_unified, pid_t pid)
+static int __unified_attach_fd(const struct lxc_conf *conf, const char *lxcpath, int fd_unified, pid_t pid)
 {
 	int ret;
 
@@ -3436,6 +4186,8 @@ static int __unified_attach_fd(const struct lxc_conf *conf, int fd_unified, pid_
 			.conf		= conf,
 			.unified_fd	= fd_unified,
 			.pid		= pid,
+			.unprivileged	= am_guest_unpriv(),
+			.lxcpath	= lxcpath,
 		};
 
 		ret = socketpair(PF_LOCAL, SOCK_STREAM | SOCK_CLOEXEC, 0, args.sk_pair);
@@ -3467,6 +4219,10 @@ static int __cgroup_attach_many(const struct lxc_conf *conf, const char *name,
 	if (ret < 0)
 		return ret_errno(ENOSYS);
 
+	if (ctx->fd_len == 0)
+		return log_trace(0, "Container runs with unwritable %s cgroup layout",
+				 cgroup_layout_name(ctx->layout));
+
 	pidstr_len = strnprintf(pidstr, sizeof(pidstr), "%d", pid);
 	if (pidstr_len < 0)
 		return pidstr_len;
@@ -3475,7 +4231,7 @@ static int __cgroup_attach_many(const struct lxc_conf *conf, const char *name,
 		int dfd_con = ctx->fd[idx];
 
 		if (unified_cgroup_fd(dfd_con))
-			ret = __unified_attach_fd(conf, dfd_con, pid);
+			ret = __unified_attach_fd(conf, lxcpath, dfd_con, pid);
 		else
 			ret = lxc_writeat(dfd_con, "cgroup.procs", pidstr, pidstr_len);
 		if (ret)
@@ -3483,9 +4239,6 @@ static int __cgroup_attach_many(const struct lxc_conf *conf, const char *name,
 		else
 			TRACE("Attached to cgroup fd %d", dfd_con);
 	}
-
-	if (idx == 0)
-		return syserror_set(-ENOENT, "Failed to attach to cgroups");
 
 	TRACE("Attached to %s cgroup layout", cgroup_layout_name(ctx->layout));
 	return 0;
@@ -3503,7 +4256,7 @@ static int __cgroup_attach_unified(const struct lxc_conf *conf, const char *name
 	if (dfd_unified < 0)
 		return ret_errno(ENOSYS);
 
-	return __unified_attach_fd(conf, dfd_unified, pid);
+	return __unified_attach_fd(conf, lxcpath, dfd_unified, pid);
 }
 
 int cgroup_attach(const struct lxc_conf *conf, const char *name,

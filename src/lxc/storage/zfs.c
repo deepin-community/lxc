@@ -98,7 +98,6 @@ static bool zfs_list_entry(const char *path, char *output, size_t inlen)
 	while (fgets(output, inlen, f->f)) {
 		if (strstr(output, path)) {
 			found = true;
-			break;
 		}
 	}
 	(void)lxc_pclose(f);
@@ -293,7 +292,7 @@ bool zfs_copy(struct lxc_conf *conf, struct lxc_storage *orig,
 		TRACE("Created zfs dataset \"%s\"", new->src);
 	}
 
-	ret = mkdir_p(new->dest, 0755);
+	ret = lxc_mkdir_p(new->dest, 0755);
 	if (ret < 0 && errno != EEXIST) {
 		SYSERROR("Failed to create directory \"%s\"", new->dest);
 		return false;
@@ -501,12 +500,20 @@ int zfs_clonepaths(struct lxc_storage *orig, struct lxc_storage *new,
 	 */
 	dataset_len = strlen(dataset);
 	len = 4 + dataset_len + 1 + strlen(cname) + 1;
+
+/* see https://gcc.gnu.org/bugzilla/show_bug.cgi?id=104069 */
+#pragma GCC diagnostic push
+#if defined __GNUC__ && __GNUC__ >= 12
+#pragma GCC diagnostic ignored "-Wuse-after-free"
+#endif
 	new->src = realloc(dataset, len);
 	if (!new->src) {
 		ERROR("Failed to reallocate memory");
 		free(dataset);
 		return -1;
 	}
+#pragma GCC diagnostic pop
+
 	memmove(new->src + 4, new->src, dataset_len);
 	memmove(new->src, "zfs:", 4);
 
@@ -542,7 +549,7 @@ int zfs_clonepaths(struct lxc_storage *orig, struct lxc_storage *new,
 		return -1;
 	}
 
-	ret = mkdir_p(new->dest, 0755);
+	ret = lxc_mkdir_p(new->dest, 0755);
 	if (ret < 0 && errno != EEXIST) {
 		SYSERROR("Failed to create directory \"%s\"", new->dest);
 		return -1;
@@ -740,7 +747,7 @@ int zfs_create(struct lxc_storage *bdev, const char *dest, const char *n,
 		TRACE("Created zfs dataset \"%s\"", bdev->src);
 	}
 
-	ret = mkdir_p(bdev->dest, 0755);
+	ret = lxc_mkdir_p(bdev->dest, 0755);
 	if (ret < 0 && errno != EEXIST) {
 		SYSERROR("Failed to create directory \"%s\"", bdev->dest);
 		return -1;

@@ -52,9 +52,11 @@ lxc_state_t lxc_str2state(const char *state)
 	return -1;
 }
 
-lxc_state_t lxc_getstate(const char *name, const char *lxcpath)
+#ifdef IN_LIBLXC
+
+lxc_state_t lxc_getstate(const char *name, const char *lxcpath, int timeout)
 {
-	return lxc_cmd_get_state(name, lxcpath);
+	return lxc_cmd_get_state(name, lxcpath, timeout);
 }
 
 static int fillwaitedstates(const char *strstates, lxc_state_t *states)
@@ -112,8 +114,10 @@ int lxc_wait(const char *lxcname, const char *states, int timeout,
 	}
 
 	TRACE("Retrieved state of container %s", lxc_state2str(state));
-	if (!s[state])
+	if ((state < STOPPED || state > MAX_STATE - 1) || !s[state])
 		return -1;
 
 	return 0;
 }
+
+#endif /* IN_LIBLXC */

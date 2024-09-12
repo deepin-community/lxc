@@ -1,19 +1,7 @@
 /* liblxcapi
  *
- * Copyright © 2021 Christian Brauner <christian.brauner@ubuntu.com>.
+ * SPDX-License-Identifier: GPL-2.0-only
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include "config.h"
@@ -85,8 +73,7 @@ static int capabilities_deny(void *payload)
 
 static int run(int (*test)(void *), bool allow)
 {
-	__do_close int fd_log = -EBADF;
-	int fret = -1;
+	int fd_log = -EBADF, fret = -1;
 	lxc_attach_options_t attach_options = LXC_ATTACH_OPTIONS_DEFAULT;
 	int ret;
 	pid_t pid;

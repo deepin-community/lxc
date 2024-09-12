@@ -1,0 +1,34 @@
+From: =?utf-8?q?Pierre-Elliott_B=C3=A9cue?= <peb@debian.org>
+Date: Mon, 1 Aug 2022 22:35:10 +0200
+Subject: [nesting] Extend mount permissions in apparmor to allow systemd
+ services' restrictions to work
+
+These options allow systemd security features to work. In particular
+cases, it helps with systemd-logind and program like this
+
+It's only added in nesting profile as it could pose security risks on
+privileged containers.
+
+mount options=(rw,rbind) -> /run/systemd/unit-root/,
+mount options=(rw,rbind) -> /run/systemd/unit-root/**,
+mount options=(rw,rshared) -> /,
+mount options=(rw,nosuid,nodev,noexec) proc -> /run/systemd/unit-root/proc/,
+---
+ config/apparmor/profiles/lxc-default-with-nesting | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/config/apparmor/profiles/lxc-default-with-nesting b/config/apparmor/profiles/lxc-default-with-nesting
+index cd198be..01562a9 100644
+--- a/config/apparmor/profiles/lxc-default-with-nesting
++++ b/config/apparmor/profiles/lxc-default-with-nesting
+@@ -10,6 +10,10 @@ profile lxc-container-default-with-nesting flags=(attach_disconnected,mediate_de
+   mount fstype=proc -> /var/cache/lxc/**,
+   mount fstype=sysfs -> /var/cache/lxc/**,
+   mount options=(rw,bind),
++  mount options=(rw,rbind) -> /run/systemd/unit-root/,
++  mount options=(rw,rbind) -> /run/systemd/unit-root/**,
++  mount options=(rw,rshared) -> /,
++  mount options=(rw,nosuid,nodev,noexec) proc -> /run/systemd/unit-root/proc/,
+   mount fstype=cgroup -> /sys/fs/cgroup/**,
+   mount fstype=cgroup2 -> /sys/fs/cgroup/**,
+ }

@@ -116,6 +116,8 @@ Options :\n\
 	.parser   = my_parser,
 	.checker  = NULL,
 	.lxcpath_additional = -1,
+	.log_priority = "ERROR",
+	.log_file     = "none",
 };
 
 static void stdin_tios_restore(void)
@@ -564,7 +566,8 @@ static int stdin_handler(int fd, uint32_t events, void *data,
 	return LXC_MAINLOOP_CLOSE;
 }
 
-int main(int argc, char *argv[])
+int __attribute__((weak, alias("lxc_top_main"))) main(int argc, char *argv[]);
+int lxc_top_main(int argc, char *argv[])
 {
 	struct lxc_async_descr descr;
 	int ret, ct_print_cnt;

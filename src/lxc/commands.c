@@ -89,6 +89,7 @@ static const char *lxc_cmd_str(lxc_cmd_t cmd)
 		[LXC_CMD_GET_CGROUP_CTX]		= "get_cgroup_ctx",
 		[LXC_CMD_GET_CGROUP_FD]			= "get_cgroup_fd",
 		[LXC_CMD_GET_LIMIT_CGROUP_FD]		= "get_limit_cgroup_fd",
+		[LXC_CMD_GET_SYSTEMD_SCOPE]		= "get_systemd_scope",
 	};
 
 	if (cmd >= LXC_CMD_MAX)
@@ -124,7 +125,7 @@ static ssize_t lxc_cmd_rsp_recv_fds(int fd_sock, struct unix_fds *fds,
 
 	ret = lxc_abstract_unix_recv_fds(fd_sock, fds, rsp, sizeof(*rsp));
 	if (ret < 0)
-		return log_error(ret, "Failed to receive file descriptors");
+		return log_error(ret, "Failed to receive file descriptors for command \"%s\"", cur_cmdstr);
 
 	/*
 	 * If we end up here with fewer or more file descriptors the caller
@@ -133,16 +134,16 @@ static ssize_t lxc_cmd_rsp_recv_fds(int fd_sock, struct unix_fds *fds,
 	 */
 
 	if (fds->flags & UNIX_FDS_RECEIVED_EXACT)
-		return log_debug(ret, "Received exact number of file descriptors %u == %u",
-				 fds->fd_count_max, fds->fd_count_ret);
+		return log_debug(ret, "Received exact number of file descriptors %u == %u for command \"%s\"",
+				 fds->fd_count_max, fds->fd_count_ret, cur_cmdstr);
 
 	if (fds->flags & UNIX_FDS_RECEIVED_LESS)
-		return log_debug(ret, "Received less file descriptors %u < %u",
-				 fds->fd_count_ret, fds->fd_count_max);
+		return log_debug(ret, "Received less file descriptors %u < %u for command \"%s\"",
+				 fds->fd_count_ret, fds->fd_count_max, cur_cmdstr);
 
 	if (fds->flags & UNIX_FDS_RECEIVED_MORE)
-		return log_debug(ret, "Received more file descriptors (excessive fds were automatically closed) %u > %u",
-				 fds->fd_count_ret, fds->fd_count_max);
+		return log_debug(ret, "Received more file descriptors (excessive fds were automatically closed) %u > %u for command \"%s\"",
+				 fds->fd_count_ret, fds->fd_count_max, cur_cmdstr);
 
 	DEBUG("Command \"%s\" received response", cur_cmdstr);
 	return ret;
@@ -211,7 +212,11 @@ static ssize_t lxc_cmd_rsp_recv(int sock, struct lxc_cmd_rr *cmd)
 		break;
 	case LXC_CMD_GET_CGROUP_CTX:
 		fds->fd_count_max = CGROUP_CTX_MAX_FD;
-		fds->flags |= UNIX_FDS_ACCEPT_LESS;
+		/* 
+		 * The container might run without any cgroup support at all,
+		 * i.e. no writable cgroup hierarchy was found.
+		 */
+		fds->flags |= UNIX_FDS_ACCEPT_LESS  | UNIX_FDS_ACCEPT_NONE ;
 		break;
 	default:
 		fds->fd_count_max = 0;
@@ -436,12 +441,12 @@ __access_r(3, 2) static int rsp_many_fds_reap(int fd, __u32 fds_len,
 }
 
 static int lxc_cmd_send(const char *name, struct lxc_cmd_rr *cmd,
-			const char *lxcpath, const char *hashed_sock_name)
+			const char *lxcpath, const char *hashed_sock_name, int rcv_timeout)
 {
 	__do_close int client_fd = -EBADF;
 	ssize_t ret = -1;
 
-	client_fd = lxc_cmd_connect(name, lxcpath, hashed_sock_name, "command");
+	client_fd = lxc_cmd_connect(name, lxcpath, hashed_sock_name, "command", rcv_timeout);
 	if (client_fd < 0)
 		return -1;
 
@@ -470,13 +475,15 @@ static int lxc_cmd_send(const char *name, struct lxc_cmd_rr *cmd,
 }
 
 /*
- * lxc_cmd: Connect to the specified running container, send it a command
- * request and collect the response
+ * lxc_cmd_timeout: Connect to the specified running container, send it a command
+ * request and collect the response with timeout
  *
- * @name           : name of container to connect to
- * @cmd            : command with initialized request to send
- * @stopped        : output indicator if the container was not running
- * @lxcpath        : the lxcpath in which the container is running
+ * @name             : name of container to connect to
+ * @cmd              : command with initialized request to send
+ * @stopped          : output indicator if the container was not running
+ * @lxcpath          : the lxcpath in which the container is running
+ * @hashed_sock_name : the hashed name of the socket (optional, can be NULL)
+ * @rcv_timeout      : SO_RCVTIMEO for LXC client_fd socket
  *
  * Returns the size of the response message on success, < 0 on failure
  *
@@ -488,8 +495,8 @@ static int lxc_cmd_send(const char *name, struct lxc_cmd_rr *cmd,
  * the slot with lxc_cmd_fd_cleanup(). The socket fd will be returned in the
  * cmd response structure.
  */
-static ssize_t lxc_cmd(const char *name, struct lxc_cmd_rr *cmd, bool *stopped,
-		       const char *lxcpath, const char *hashed_sock_name)
+static ssize_t lxc_cmd_timeout(const char *name, struct lxc_cmd_rr *cmd, bool *stopped,
+		       const char *lxcpath, const char *hashed_sock_name, int rcv_timeout)
 {
 	__do_close int client_fd = -EBADF;
 	bool stay_connected = false;
@@ -501,9 +508,18 @@ static ssize_t lxc_cmd(const char *name, struct lxc_cmd_rr *cmd, bool *stopped,
 
 	*stopped = 0;
 
-	client_fd = lxc_cmd_send(name, cmd, lxcpath, hashed_sock_name);
+	/*
+	 * We don't want to change anything for the case when the client
+	 * socket fd lifetime is longer than the lxc_cmd_timeout() execution.
+	 * So it's better not to set SO_RCVTIMEO for client_fd,
+	 * because it'll have an affect on the entire socket lifetime.
+	 */
+	if (stay_connected)
+		rcv_timeout = 0;
+
+	client_fd = lxc_cmd_send(name, cmd, lxcpath, hashed_sock_name, rcv_timeout);
 	if (client_fd < 0) {
-		if (IN_SET(errno, ECONNREFUSED, EPIPE))
+		if (errno == ECONNREFUSED || errno == EPIPE)
 			*stopped = 1;
 
 		return systrace("Command \"%s\" failed to connect command socket", lxc_cmd_str(cmd->req.cmd));
@@ -520,6 +536,12 @@ static ssize_t lxc_cmd(const char *name, struct lxc_cmd_rr *cmd, bool *stopped,
 		cmd->rsp.ret = move_fd(client_fd);
 
 	return ret;
+}
+
+static ssize_t lxc_cmd(const char *name, struct lxc_cmd_rr *cmd, bool *stopped,
+		       const char *lxcpath, const char *hashed_sock_name)
+{
+	return lxc_cmd_timeout(name, cmd, stopped, lxcpath, hashed_sock_name, 0);
 }
 
 int lxc_try_cmd(const char *name, const char *lxcpath)
@@ -701,7 +723,7 @@ static int lxc_cmd_get_devpts_fd_callback(int fd, struct lxc_cmd_req *req,
 
 int lxc_cmd_get_seccomp_notify_fd(const char *name, const char *lxcpath)
 {
-#ifdef HAVE_SECCOMP_NOTIFY
+#if HAVE_DECL_SECCOMP_NOTIFY_FD
 	bool stopped = false;
 	int fd;
 	ssize_t ret;
@@ -732,7 +754,7 @@ static int lxc_cmd_get_seccomp_notify_fd_callback(int fd, struct lxc_cmd_req *re
 						  struct lxc_handler *handler,
 						  struct lxc_async_descr *descr)
 {
-#ifdef HAVE_SECCOMP_NOTIFY
+#if HAVE_DECL_SECCOMP_NOTIFY_FD
 	struct lxc_cmd_rsp rsp = {
 		.ret = -EBADF,
 	};
@@ -762,9 +784,14 @@ int lxc_cmd_get_cgroup_ctx(const char *name, const char *lxcpath,
 		return sysdebug("Failed to process \"%s\"",
 				lxc_cmd_str(LXC_CMD_GET_CGROUP_CTX));
 
-	if (cmd.rsp.ret < 0)
+	if (cmd.rsp.ret < 0) {
+		/* Container does not have any writable cgroups. */
+		if (ret_ctx->fd_len == 0)
+			return 0;
+
 		return sysdebug_set(cmd.rsp.ret, "Failed to receive file descriptor for \"%s\"",
 				    lxc_cmd_str(LXC_CMD_GET_CGROUP_CTX));
+	}
 
 	return 0;
 }
@@ -1032,7 +1059,7 @@ out:
  *
  * Returns the state on success, < 0 on failure
  */
-int lxc_cmd_get_state(const char *name, const char *lxcpath)
+int lxc_cmd_get_state(const char *name, const char *lxcpath, int timeout)
 {
 	bool stopped = false;
 	ssize_t ret;
@@ -1040,7 +1067,7 @@ int lxc_cmd_get_state(const char *name, const char *lxcpath)
 
 	lxc_cmd_init(&cmd, LXC_CMD_GET_STATE);
 
-	ret = lxc_cmd(name, &cmd, &stopped, lxcpath, NULL);
+	ret = lxc_cmd_timeout(name, &cmd, &stopped, lxcpath, NULL, timeout);
 	if (ret < 0 && stopped)
 		return STOPPED;
 
@@ -1307,6 +1334,55 @@ static int lxc_cmd_get_lxcpath_callback(int fd, struct lxc_cmd_req *req,
 	return lxc_cmd_rsp_send_reap(fd, &rsp);
 }
 
+char *lxc_cmd_get_systemd_scope(const char *name, const char *lxcpath)
+{
+	bool stopped = false;
+	ssize_t ret;
+	struct lxc_cmd_rr cmd;
+
+	lxc_cmd_init(&cmd, LXC_CMD_GET_SYSTEMD_SCOPE);
+
+	ret = lxc_cmd(name, &cmd, &stopped, lxcpath, NULL);
+	if (ret < 0)
+		return NULL;
+
+	if (cmd.rsp.ret == 0)
+		return cmd.rsp.data;
+
+	return NULL;
+}
+
+static int lxc_cmd_get_systemd_scope_callback(int fd, struct lxc_cmd_req *req,
+					     struct lxc_handler *handler,
+					     struct lxc_async_descr *descr)
+{
+	__do_free char *scope = NULL;
+	struct lxc_cmd_rsp rsp = {
+		.ret = -EINVAL,
+	};
+
+	// cgroup_meta.systemd_scope is the full cgroup path to the scope.
+	// The caller just wants the actual scope name, that is, basename().
+	// (XXX - or do we want the caller to massage it?  I'm undecided)
+	if (handler->conf->cgroup_meta.systemd_scope) {
+		scope = strrchr(handler->conf->cgroup_meta.systemd_scope, '/');
+		if (scope && *scope)
+			scope++;
+		if (scope && *scope)
+			scope = strdup(scope);
+	}
+
+	if (!scope)
+		goto out;
+
+	rsp.ret = 0;
+	rsp.data = scope;
+	rsp.datalen = strlen(scope) + 1;
+
+out:
+	return lxc_cmd_rsp_send_reap(fd, &rsp);
+}
+
 int lxc_cmd_add_state_client(const char *name, const char *lxcpath,
 			     lxc_state_t states[static MAX_STATE],
 			     int *state_client_fd)
@@ -1543,7 +1619,7 @@ int lxc_cmd_seccomp_notify_add_listener(const char *name, const char *lxcpath,
 					/* unused */ unsigned int flags)
 {
 
-#ifdef HAVE_SECCOMP_NOTIFY
+#if HAVE_DECL_SECCOMP_NOTIFY_FD
 	bool stopped = false;
 	ssize_t ret;
 	struct lxc_cmd_rr cmd;
@@ -1568,7 +1644,7 @@ static int lxc_cmd_seccomp_notify_add_listener_callback(int fd,
 {
 	struct lxc_cmd_rsp rsp = {0};
 
-#ifdef HAVE_SECCOMP_NOTIFY
+#if HAVE_DECL_SECCOMP_NOTIFY_FD
 	int ret;
 	__do_close int recv_fd = -EBADF;
 
@@ -1891,6 +1967,7 @@ static int lxc_cmd_process(int fd, struct lxc_cmd_req *req,
 		[LXC_CMD_GET_CGROUP_CTX]		= lxc_cmd_get_cgroup_ctx_callback,
 		[LXC_CMD_GET_CGROUP_FD]			= lxc_cmd_get_cgroup_fd_callback,
 		[LXC_CMD_GET_LIMIT_CGROUP_FD]		= lxc_cmd_get_limit_cgroup_fd_callback,
+		[LXC_CMD_GET_SYSTEMD_SCOPE]		= lxc_cmd_get_systemd_scope_callback,
 	};
 
 	if (req->cmd >= LXC_CMD_MAX)
@@ -2020,13 +2097,9 @@ static int lxc_cmd_accept(int fd, uint32_t events, void *data,
 	__do_close int connection = -EBADF;
 	int opt = 1, ret = -1;
 
-	connection = accept(fd, NULL, 0);
+	connection = accept4(fd, NULL, 0, SOCK_CLOEXEC);
 	if (connection < 0)
 		return log_error_errno(LXC_MAINLOOP_ERROR, errno, "Failed to accept connection to run command");
-
-	ret = fcntl(connection, F_SETFD, FD_CLOEXEC);
-	if (ret < 0)
-		return log_error_errno(ret, errno, "Failed to set close-on-exec on incoming command connection");
 
 	ret = setsockopt(connection, SOL_SOCKET, SO_PASSCRED, &opt, sizeof(opt));
 	if (ret < 0)
@@ -2061,10 +2134,6 @@ int lxc_server_init(const char *name, const char *lxcpath, const char *suffix)
 
 		return log_error_errno(-1, errno, "Failed to create command socket %s", &path[1]);
 	}
-
-	ret = fcntl(fd, F_SETFD, FD_CLOEXEC);
-	if (ret < 0)
-		return log_error_errno(-1, errno, "Failed to set FD_CLOEXEC on command socket file descriptor");
 
 	return log_trace(move_fd(fd), "Created abstract unix socket \"%s\"", &path[1]);
 }

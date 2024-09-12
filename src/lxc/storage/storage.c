@@ -215,7 +215,7 @@ static const struct lxc_storage_type *storage_query(struct lxc_conf *conf)
 	size_t i;
 	const struct lxc_storage_type *bdev;
 	const char *path = conf->rootfs.path;
-	const char *type = conf->rootfs.bdev_type;
+	const char *type = conf->rootfs.__bdev_type;
 
 	bdev = get_storage_by_name(path, type);
 	if (bdev)
@@ -370,7 +370,7 @@ struct lxc_storage *storage_copy(struct lxc_container *c, const char *cname,
 
 		ret = stat(orig->dest, &sb);
 		if (ret < 0 && errno == ENOENT) {
-			ret = mkdir_p(orig->dest, 0755);
+			ret = lxc_mkdir_p(orig->dest, 0755);
 			if (ret < 0)
 				WARN("Failed to create directory \"%s\"", orig->dest);
 		}
@@ -638,10 +638,10 @@ struct lxc_storage *storage_init(struct lxc_conf *conf)
 	return bdev;
 }
 
-bool storage_is_dir(struct lxc_conf *conf)
+bool storage_lxc_is_dir(struct lxc_conf *conf)
 {
 	struct lxc_storage *orig;
-	char *type = conf->rootfs.bdev_type;
+	const char *type = conf->rootfs.__bdev_type;
 	bool bret = false;
 
 	if (type)

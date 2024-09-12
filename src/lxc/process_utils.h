@@ -5,14 +5,18 @@
 
 #include "config.h"
 
-#include <linux/sched.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+
+#if HAVE_SYS_PIDFD_H
+#include <sys/pidfd.h>
+#endif
 
 #include "compiler.h"
 #include "syscall_numbers.h"
@@ -135,8 +139,10 @@
 #endif
 
 /* waitid */
+#if !HAVE_SYS_PIDFD_H
 #ifndef P_PIDFD
 #define P_PIDFD 3
+#endif
 #endif
 
 #ifndef CLONE_ARGS_SIZE_VER0
@@ -158,7 +164,8 @@
 #define u64_to_ptr(x) ((void *)(uintptr_t)x)
 #endif
 
-struct lxc_clone_args {
+#if !HAVE_STRUCT_CLONE_ARGS
+struct clone_args {
 	__aligned_u64 flags;
 	__aligned_u64 pidfd;
 	__aligned_u64 child_tid;
@@ -171,8 +178,9 @@ struct lxc_clone_args {
 	__aligned_u64 set_tid_size;
 	__aligned_u64 cgroup;
 };
+#endif
 
-__returns_twice static inline pid_t lxc_clone3(struct lxc_clone_args *args, size_t size)
+__returns_twice static inline pid_t lxc_clone3(struct clone_args *args, size_t size)
 {
 	return syscall(__NR_clone3, args, size);
 }
@@ -285,5 +293,17 @@ static inline pid_t lxc_raw_gettid(void)
 
 __hidden extern int lxc_raw_pidfd_send_signal(int pidfd, int sig, siginfo_t *info,
 					      unsigned int flags);
+
+static inline const char *signal_name(int sig)
+{
+	const char *s;
+
+#if HAVE_SIGDESCR_NP
+	s = sigdescr_np(sig);
+#else
+	s = "UNSUPPORTED";
+#endif
+	return s ?: "INVALID_SIGNAL_NUMBER";
+}
 
 #endif /* __LXC_PROCESS_UTILS_H */

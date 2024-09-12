@@ -1,8 +1,158 @@
-lxc (1:4.0.11-1) UNRELEASED; urgency=medium
+lxc (1:6.0.1-1) unstable; urgency=medium
 
-  * update
+  * New upstream release
+    - Drop patch #0001, applied upstream
+  * Update Standards-Version to 4.7.0 in d/control (no changes needed)
 
- -- pkg-lxc <pkg-lxc-devel@lists.alioth.debian.org>  Thu, 19 May 2022 10:49:29 +0800
+ -- Mathias Gibbens <gibmat@debian.org>  Thu, 27 Jun 2024 20:44:45 +0000
+
+lxc (1:6.0.0a-1) unstable; urgency=medium
+
+  * New upstream release 6.0.0a
+    Not an alpha release, but rather a minor fix of meson LXC_DEVEL tracker.
+
+ -- Pierre-Elliott Bécue <peb@debian.org>  Thu, 02 May 2024 15:22:44 +0200
+
+lxc (1:6.0.0-1) unstable; urgency=medium
+
+  [ Aleksandr Mikhalitsyn ]
+  * debian/rules: Re-shuffle Ubuntu-specific logic
+  * debian/tests: Disable unprivileged tests (not working in autopkgtest)
+
+  [ Pierre-Elliott Bécue ]
+  * New upstream release 6.0.0
+    Closes: #1041414
+  * d/control:
+    - Add version for apparmor dependency to cover evolutions with
+      https://github.com/lxc/lxc/pull/4295
+    - Put lxc-templates as a Suggests and add distrobuilder as a Recommend
+  * d/copyright: updated
+
+ -- Pierre-Elliott Bécue <peb@debian.org>  Thu, 02 May 2024 12:56:34 +0200
+
+lxc (1:5.0.3-3) unstable; urgency=medium
+
+  [ Aleksandr Mikhalitsyn ]
+  * debian/tests: Addition of the "no-devel" test
+  * debian/tests/unprivileged-containers: Fix and make work on Ubuntu
+
+  [ Mathias Gibbens ]
+  * d/control:
+    - Update Build-Depends from systemd -> systemd-dev (Closes: #1060614)
+    - Update Build-Depends from pkg-config -> pkgconf
+  * Cherry-pick upstream fixes for d/tests/test-usernic
+  * Update years in d/copyright
+
+  [ Michael Biebl ]
+  * Install PAM modules into /usr. (Closes: #1061490)
+  * Drop Build-Depends on dh-exec, no longer necessary.
+
+  [ Stéphane Graber ]
+  * Cherry-pick upstream bugfixes:
+    - 0013-cherry-pick-remove-broken-cgroup-tests.patch
+    - 0014-cherry-pick-lxc-copy-apparmor.patch
+  * Add Ubuntu-specific patch (for now):
+    - Handle AppArmor ABI 4 with userns extension
+  * debian/rules
+    - Add lxc-copy apparmor profile
+    - Apply Ubuntu-specific patch
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sat, 30 Mar 2024 00:45:04 +0000
+
+lxc (1:5.0.3-2.1) unstable; urgency=medium
+
+  * Non-maintainer upload.
+  * Rename libraries for 64-bit time_t transition.  Closes: #1062679
+
+ -- Graham Inggs <ginggs@debian.org>  Thu, 29 Feb 2024 10:37:01 +0000
+
+lxc (1:5.0.3-2) unstable; urgency=medium
+
+  * Switch default branch to debian/sid
+  * Add criu as a Suggests for bin:lxc (Closes: #947334)
+  * Cherry-pick upstream fix for creating ephemeral copies (Closes: #1001713)
+
+ -- Mathias Gibbens <gibmat@debian.org>  Thu, 30 Nov 2023 01:04:13 +0000
+
+lxc (1:5.0.3-1) unstable; urgency=medium
+
+  [ Ceppo ]
+  * Add Italian debconf translation (Closes: #1050106)
+
+  [ Gioele Barabucci ]
+  * d/tests/control: Remove unnecessary dependency on lsb-release
+
+  [ Helmut Grohne ]
+  * Fix FTBFS when systemdsystemunitdir changes in systemd.pc (Closes: #1052379)
+
+  [ Mathias Gibbens ]
+  * New upstream release
+  * Add translator information to d/copyright
+  * d/control:
+    - Remove liblua5.2-dev from Build-Depends (Closes: #1050519)
+    - Remove lsb-base from Depends
+  * Add d/clean to fix failing to build twice in a row (Closes: #1046733)
+
+  [ Remus-Gabriel Chelu ]
+  * Add Romanian debconf translation (Closes: #1032345)
+
+ -- Mathias Gibbens <gibmat@debian.org>  Fri, 22 Sep 2023 14:53:31 +0000
+
+lxc (1:5.0.2-1) unstable; urgency=medium
+
+  * New upstream release
+    - Fixes CVE-2022-47952
+    - Drop glibc 2.36 patch applied upstream
+  * Bump Standards-Version in d/control (no changes needed)
+  * Refresh d/copyright
+
+ -- Mathias Gibbens <gibmat@debian.org>  Tue, 17 Jan 2023 02:53:00 +0000
+
+lxc (1:5.0.1-2) unstable; urgency=medium
+
+  * d/control:
+    - Add myself to Uploaders
+    - Bump Standards-Version (no changes needed)
+    - Set minimum required meson version in Build-Depends (Closes: #1016523)
+    - Update list of architectures missing libseccomp-dev
+    - Add Rules-Requires-Root: binary-targets
+  * Add myself to d/copyright
+  * d/liblxc1.symbols:
+    - Avoid build failure due to missing symbols on architectures without
+      libseccomp-dev (Closes: #922545)
+  * Drop d/patches/0006-adjust-pam-dir.patch and modify d/libpam-cgfs.install
+    to directly install pam_cgfs.so
+  * Cherry-pick upstream fixes for building with glibc 2.36 (Closes: #1023437)
+  * Add d/upstream/metadata
+  * Remove asterisk from NEWS file to silence lintian tag
+
+ -- Mathias Gibbens <gibmat@debian.org>  Fri, 04 Nov 2022 19:54:47 +0000
+
+lxc (1:5.0.1-1) unstable; urgency=medium
+
+  * Team upload
+
+  [ Mathias Gibbens ]
+  * New upstream release 5.0.1 (Closes: #1005099, #1010843, #1006353)
+    - Switch to meson build system and update d/rules as needed
+    - Update Build-Depends and Depends in d/control
+    - Drop patches no longer needed / applied upstream
+    - Add patch to fix installed location of libpam_cgfs.so
+    - Update d/liblxc-common.lintian-overrides
+    - Update d/liblxc1.symbols
+
+  [ Antonio Terceiro ]
+  * debian/rules: drop handling of bash completion links
+
+  [ Pierre-Elliott Bécue ]
+  * Apply Janitor's changes on d/control constraints.
+  * Fix debian/liblxc1.symbols
+  * d/p/0004: Add a patch to make systemd security features working in nesting
+    apparmor profile.
+    This can cause security risks in privileged containers, so it's only in
+    nesting profile. (Closes: #995350)
+
+ -- Mathias Gibbens <mathias@calenhad.com>  Mon, 01 Aug 2022 22:46:52 +0200
 
 lxc (1:4.0.11-1) unstable; urgency=medium
 

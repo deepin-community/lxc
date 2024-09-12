@@ -1,6 +1,6 @@
 # French translation for lxc debconf templates.
 # Copyright (C) 2018 Pierre-Elliott Bécue <peb@debian.org>
-# This file is distributed under the same license as the mailman3 package.
+# This file is distributed under the same license as the lxc package.
 # Pierre-Elliott Bécue <peb@debian.org>, 2018.
 #
 #, fuzzy

@@ -1,4 +1,4 @@
-[![LXD](https://linuxcontainers.org/static/img/containers.png)](https://linuxcontainers.org/lxd)
+![Linux Containers logo](https://linuxcontainers.org/static/img/containers.png)
 # LXC
 
 LXC is the well-known and heavily tested low-level Linux container runtime. It
@@ -13,7 +13,6 @@ Type            | Service               | Status
 CI (Linux)      | GitHub                | [![Build Status](https://github.com/lxc/lxc/actions/workflows/build.yml/badge.svg)](https://github.com/lxc/lxc/actions)
 CI (Linux)      | Jenkins               | [![Build Status](https://jenkins.linuxcontainers.org/job/lxc-github-commit/badge/icon)](https://jenkins.linuxcontainers.org/job/lxc-github-commit/)
 Project status  | CII Best Practices    | [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/1087/badge)](https://bestpractices.coreinfrastructure.org/projects/1087)
-Code Quality    | LGTM                  | [![Language grade: C/C++](https://img.shields.io/lgtm/grade/cpp/g/lxc/lxc.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/lxc/lxc/context:cpp)
 Fuzzing         | OSS-Fuzz              | [![Fuzzing Status](https://oss-fuzz-build-logs.storage.googleapis.com/badges/lxc.svg)](https://oss-fuzz-build-logs.storage.googleapis.com/index.html#lxc)
 Fuzzing         | CIFuzz                | [![CIFuzz](https://github.com/lxc/lxc/actions/workflows/cifuzz.yml/badge.svg)](https://github.com/lxc/lxc/actions/workflows/cifuzz.yml)
 
@@ -95,7 +94,7 @@ configuration keys such as `lxc.net.0` expose various subkeys such as
 `lxc.net.0.type`, `lxc.net.0.link`, `lxc.net.0.ipv6.address`, and others for
 even more fine-grained configuration.
 
-LXC is used as the default runtime for [LXD](https://github.com/lxc/lxd),
+LXC is used as the default runtime for [Incus](https://github.com/lxc/incus),
 a container hypervisor exposing a well-designed and stable REST-api on top of
 it.
 
@@ -110,7 +109,8 @@ features. This includes (but isn't limited to):
 - ppc, ppc64, ppc64le
 - riscv64
 - s390x
-- armvl7, arm64
+- armv7l, arm64
+- loongarch64
 
 LXC also supports at least the following C standard libraries:
 
@@ -132,7 +132,7 @@ report it by e-mail to all of the following persons:
 
 - serge (at) hallyn (dot) com
 - stgraber (at) ubuntu (dot) com
-- christian.brauner (at) ubuntu (dot) com
+- brauner (at) kernel (dot) org
 
 For further details please have a look at
 
@@ -169,7 +169,7 @@ versioning](http://semver.org/) scheme.
 
 Source for the latest released version can always be downloaded from
 
-- https://linuxcontainers.org/downloads/
+- https://linuxcontainers.org/lxc/downloads/
 
 You can browse the up to the minute source code and change history online
 
@@ -179,15 +179,10 @@ You can browse the up to the minute source code and change history online
 
 Without considering distribution specific details a simple
 
-    ./autogen.sh && ./configure && make && sudo make install
+    meson setup -Dprefix=/usr build
+    meson compile -C build
 
 is usually sufficient.
-
-In order to test current git master of LXC it is usually a good idea to compile with
-
-    ./autogen.sh && ./configure && make
-
-in a convenient directory and set `LD_LIBRARY_PATH="${BUILD_DIR}"/lxc/src/lxc/.libs`.
 
 ## Getting help
 
@@ -195,7 +190,7 @@ When you find you need help, the LXC projects provides you with several options.
 
 ### Discuss Forum
 
-We maintain an discuss forum at
+We maintain a discuss forum at
 
 - https://discuss.linuxcontainers.org/
 

@@ -21,6 +21,7 @@
 #include "list.h"
 #include "lxcseccomp.h"
 #include "memory_utils.h"
+#include "mount_utils.h"
 #include "namespace.h"
 #include "ringbuf.h"
 #include "start.h"
@@ -29,6 +30,7 @@
 #include "string_utils.h"
 #include "syscall_wrappers.h"
 #include "terminal.h"
+#include "utils.h"
 
 #if HAVE_SYS_RESOURCE_H
 #include <sys/resource.h>
@@ -74,6 +76,13 @@ struct lxc_cgroup {
 			char *container_dir;
 			char *namespace_dir;
 			bool relative;
+			/* If an unpriv user in pure unified-only hierarchy
+			 * starts a container, then we ask systemd to create
+			 * a scope for us, and create the monitor and container
+			 * cgroups under that.
+			 * This will ignore the above things like monitor_dir
+			 */
+			char *systemd_scope;
 		};
 	};
 
@@ -216,7 +225,7 @@ struct lxc_mount_options {
 	unsigned long mnt_flags;
 	unsigned long prop_flags;
 	char *data;
-	struct lxc_mount_attr attr;
+	struct mount_attr attr;
 	char *raw_options;
 };
 
@@ -225,7 +234,7 @@ struct lxc_mount_options {
  * @path         : the rootfs source (directory or device)
  * @mount        : where it is mounted
  * @buf		 : static buffer to construct paths
- * @bev_type     : optional backing store type
+ * @__bdev_type    : optional backing store type
  * @managed      : whether it is managed by LXC
  * @dfd_mnt	 : fd for @mount
  * @dfd_dev : fd for /dev of the container
@@ -243,7 +252,7 @@ struct lxc_rootfs {
 	int dfd_dev;
 
 	char buf[PATH_MAX];
-	char *bdev_type;
+	char *__bdev_type;
 	bool managed;
 	struct lxc_mount_options mnt_opts;
 	struct lxc_storage *storage;
@@ -253,35 +262,77 @@ struct lxc_rootfs {
  * Automatic mounts for LXC to perform inside the container
  */
 enum {
-	LXC_AUTO_PROC_RW              = 0x001, /* /proc read-write */
-	LXC_AUTO_PROC_MIXED           = 0x002, /* /proc/sys and /proc/sysrq-trigger read-only */
-	LXC_AUTO_PROC_MASK            = 0x003,
+	/* /proc read-write */
+	LXC_AUTO_PROC_RW              = BIT(0),
+	/* /proc/sys and /proc/sysrq-trigger read-only */
+	LXC_AUTO_PROC_MIXED           = BIT(1),
+	LXC_AUTO_PROC_MASK            = LXC_AUTO_PROC_RW |
+					LXC_AUTO_PROC_MIXED,
+	/* /sys read-write */
+	LXC_AUTO_SYS_RW               = BIT(2),
+	/* /sys read-only */
+	LXC_AUTO_SYS_RO               = BIT(3),
+	/* /sys read-only and /sys/class/net read-write */
+	LXC_AUTO_SYS_MIXED            = LXC_AUTO_SYS_RW |
+					LXC_AUTO_SYS_RO,
+	LXC_AUTO_SYS_MASK             = LXC_AUTO_SYS_MIXED,
 
-	LXC_AUTO_SYS_RW               = 0x004, /* /sys */
-	LXC_AUTO_SYS_RO               = 0x008, /* /sys read-only */
-	LXC_AUTO_SYS_MIXED            = 0x00C, /* /sys read-only and /sys/class/net read-write */
-	LXC_AUTO_SYS_MASK             = 0x00C,
+	/* /sys/fs/cgroup (partial mount, read-only) */
+	LXC_AUTO_CGROUP_RO            = BIT(4),
+	/* /sys/fs/cgroup (partial mount, read-write) */
+	LXC_AUTO_CGROUP_RW            = BIT(5),
+	/* /sys/fs/cgroup (partial mount, paths r/o, cgroup r/w) */
+	LXC_AUTO_CGROUP_MIXED         = LXC_AUTO_CGROUP_RO |
+					LXC_AUTO_CGROUP_RW,
+	/* /sys/fs/cgroup (full mount, read-only) */
+	LXC_AUTO_CGROUP_FULL_RO       = BIT(6),
+	/* /sys/fs/cgroup (full mount, read-write) */
+	LXC_AUTO_CGROUP_FULL_RW       = BIT(7),
+	/* /sys/fs/cgroup (full mount, parent r/o, own r/w) */
+	LXC_AUTO_CGROUP_FULL_MIXED    = LXC_AUTO_CGROUP_FULL_RO |
+					LXC_AUTO_CGROUP_FULL_RW,
 
-	LXC_AUTO_CGROUP_RO            = 0x010, /* /sys/fs/cgroup (partial mount, read-only) */
-	LXC_AUTO_CGROUP_RW            = 0x020, /* /sys/fs/cgroup (partial mount, read-write) */
-	LXC_AUTO_CGROUP_MIXED         = 0x030, /* /sys/fs/cgroup (partial mount, paths r/o, cgroup r/w) */
-	LXC_AUTO_CGROUP_FULL_RO       = 0x040, /* /sys/fs/cgroup (full mount, read-only) */
-	LXC_AUTO_CGROUP_FULL_RW       = 0x050, /* /sys/fs/cgroup (full mount, read-write) */
-	LXC_AUTO_CGROUP_FULL_MIXED    = 0x060, /* /sys/fs/cgroup (full mount, parent r/o, own r/w) */
+	/*
+	 * Mount a pure read-write cgroup2 layout in the container independent
+	 * of the cgroup layout used on the host.
+	 */
+	LXC_AUTO_CGROUP2_RW           = BIT(8),
+	/*
+	 * Mount a pure read-only cgroup2 layout in the container independent
+	 * of the cgroup layout used on the host.
+	 */
+	LXC_AUTO_CGROUP2_RO           = BIT(9),
+
 	/*
 	 * These are defined in such a way as to retain binary compatibility
 	 * with earlier versions of this code. If the previous mask is applied,
 	 * both of these will default back to the _MIXED variants, which is
 	 * safe.
 	 */
-	LXC_AUTO_CGROUP_NOSPEC        = 0x0B0, /* /sys/fs/cgroup (partial mount, r/w or mixed, depending on caps) */
-	LXC_AUTO_CGROUP_FULL_NOSPEC   = 0x0E0, /* /sys/fs/cgroup (full mount, r/w or mixed, depending on caps) */
-	LXC_AUTO_CGROUP_FORCE         = 0x100, /* mount cgroups even when cgroup namespaces are supported */
-	LXC_AUTO_CGROUP_MASK          = 0x1F0, /* all known cgroup options */
+	/* /sys/fs/cgroup (partial mount, r/w or mixed, depending on caps) */
+	LXC_AUTO_CGROUP_NOSPEC        = 0x0B0,
+	/* /sys/fs/cgroup (full mount, r/w or mixed, depending on caps) */
+	LXC_AUTO_CGROUP_FULL_NOSPEC   = 0x0E0,
+	/* mount cgroups even when cgroup namespaces are supported */
+	LXC_AUTO_CGROUP_FORCE         = BIT(10),
+	/* all known cgroup options */
+	LXC_AUTO_CGROUP_MASK          = LXC_AUTO_CGROUP_MIXED |
+					LXC_AUTO_CGROUP_FULL_MIXED |
+					LXC_AUTO_CGROUP_NOSPEC |
+					LXC_AUTO_CGROUP_FULL_NOSPEC |
+					LXC_AUTO_CGROUP_FORCE |
+					LXC_AUTO_CGROUP2_RW |
+					LXC_AUTO_CGROUP2_RO,
 
-	LXC_AUTO_SHMOUNTS             = 0x200, /* shared mount point */
-	LXC_AUTO_SHMOUNTS_MASK        = 0x200, /* shared mount point mask */
-	LXC_AUTO_ALL_MASK             = 0x1FF, /* all known settings */
+	/* shared mount point */
+	LXC_AUTO_SHMOUNTS             = BIT(11),
+	/* shared mount point mask */
+	LXC_AUTO_SHMOUNTS_MASK        = LXC_AUTO_SHMOUNTS,
+
+	/* all known settings */
+	LXC_AUTO_ALL_MASK             = LXC_AUTO_PROC_MASK |
+					LXC_AUTO_SYS_MASK |
+					LXC_AUTO_CGROUP_MASK,
 };
 
 enum lxchooks {
@@ -528,9 +579,6 @@ struct lxc_conf {
 	__u64 sched_core_cookie;
 };
 
-__hidden extern int write_id_mapping(enum idtype idtype, pid_t pid, const char *buf, size_t buf_size)
-    __access_r(3, 4);
-
 extern thread_local struct lxc_conf *current_config;
 
 __hidden extern int run_lxc_hooks(const char *name, char *hook, struct lxc_conf *conf, char *argv[]);
@@ -542,7 +590,6 @@ __hidden extern void lxc_storage_put(struct lxc_conf *conf);
 __hidden extern int lxc_rootfs_init(struct lxc_conf *conf, bool userns);
 __hidden extern int lxc_rootfs_prepare_parent(struct lxc_handler *handler);
 __hidden extern int lxc_idmapped_mounts_parent(struct lxc_handler *handler);
-__hidden extern int lxc_map_ids(struct list_head *idmap, pid_t pid);
 __hidden extern int lxc_create_tty(const char *name, struct lxc_conf *conf);
 __hidden extern void lxc_delete_tty(struct lxc_tty_info *ttys);
 __hidden extern int lxc_clear_config_caps(struct lxc_conf *c);
@@ -561,8 +608,6 @@ __hidden extern int lxc_setup_rootfs_prepare_root(struct lxc_conf *conf, const c
 __hidden extern int lxc_setup(struct lxc_handler *handler);
 __hidden extern int lxc_setup_parent(struct lxc_handler *handler);
 __hidden extern int setup_resource_limits(struct lxc_conf *conf, pid_t pid);
-__hidden extern int find_unmapped_nsid(const struct lxc_conf *conf, enum idtype idtype);
-__hidden extern int mapped_hostid(unsigned id, const struct lxc_conf *conf, enum idtype idtype);
 __hidden extern int userns_exec_1(const struct lxc_conf *conf, int (*fn)(void *), void *data,
 				  const char *fn_name);
 __hidden extern int userns_exec_full(struct lxc_conf *conf, int (*fn)(void *), void *data,
@@ -575,9 +620,6 @@ __hidden extern void tmp_proc_unmount(struct lxc_conf *lxc_conf);
 __hidden extern void suggest_default_idmap(void);
 __hidden extern FILE *make_anonymous_mount_file(const struct list_head *mount,
 						bool include_nesting_helpers);
-__hidden extern int run_script(const char *name, const char *section, const char *script, ...);
-__hidden extern int run_script_argv(const char *name, unsigned int hook_version, const char *section,
-				    const char *script, const char *hookname, char **argsin);
 
 __hidden extern bool has_cap(__u32 cap, struct lxc_conf *conf);
 static inline bool lxc_wants_cap(__u32 cap, struct lxc_conf *conf)

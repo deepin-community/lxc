@@ -11,10 +11,6 @@
 #include "hlist.h"
 #include "memory_utils.h"
 
-#ifdef HAVE_LIBURING
-#include <liburing.h>
-#endif
-
 #define LXC_MAINLOOP_ERROR -1
 #define LXC_MAINLOOP_CONTINUE 0
 #define LXC_MAINLOOP_CLOSE 1
@@ -29,7 +25,7 @@ struct lxc_async_descr {
 	async_descr_t type;
 	union {
 		int epfd;
-#ifdef HAVE_LIBURING
+#if HAVE_LIBURING
 		struct io_uring *ring;
 #endif
 	};

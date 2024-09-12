@@ -8,6 +8,7 @@
 #include <asm/types.h>
 #include <limits.h>
 #include <linux/if_link.h>
+#include <linux/ioctl.h>
 #include <linux/loop.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -34,6 +35,27 @@
 /* Define __S_ISTYPE if missing from the C library. */
 #ifndef __S_ISTYPE
 #define __S_ISTYPE(mode, mask) (((mode)&S_IFMT) == (mask))
+#endif
+
+/*
+ * POLL_ADD flags. Note that since sqe->poll_events is the flag space, the
+ * command flags for POLL_ADD are stored in sqe->len.
+ *
+ * IORING_POLL_ADD_MULTI	Multishot poll. Sets IORING_CQE_F_MORE if
+ *				the poll handler will continue to report
+ *				CQEs on behalf of the same SQE.
+ */
+#ifndef IORING_POLL_ADD_MULTI
+#define IORING_POLL_ADD_MULTI (1U << 0)
+#endif
+
+/*
+ * cqe->flags
+ *
+ * IORING_CQE_F_MORE	If set, parent SQE will generate more CQE entries
+ */
+#ifndef IORING_CQE_F_MORE
+#define IORING_CQE_F_MORE (1U << 1)
 #endif
 
 /* capabilities */
@@ -784,5 +806,19 @@ static inline bool is_set(__u32 bit, __u32 *bitarr)
 {
 	return (bitarr[bit / NBITS] & ((__u32)1 << (bit % NBITS))) != 0;
 }
+
+#define BIT(nr) (1UL << (nr))
+
+#ifndef FS_IOC_GETFLAGS
+#define FS_IOC_GETFLAGS _IOR('f', 1, long)
+#endif
+
+#ifndef FS_IOC_SETFLAGS
+#define FS_IOC_SETFLAGS _IOW('f', 2, long)
+#endif
+
+#ifndef FS_IMMUTABLE_FL
+#define FS_IMMUTABLE_FL 0x00000010 /* Immutable file */
+#endif
 
 #endif /* __LXC_MACRO_H */

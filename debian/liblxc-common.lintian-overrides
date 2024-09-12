@@ -1,2 +1,2 @@
 # false positive (lxc-user-nic)
-liblxc-common: elevated-privileges usr/libexec/lxc/lxc-user-nic 4755 root/root
+liblxc-common: elevated-privileges 4755 root/root [usr/libexec/lxc/lxc-user-nic]

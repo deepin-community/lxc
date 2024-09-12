@@ -1,28 +1,11 @@
-/*
- * lxc: linux Container library
+/* lxc: linux Container library
  *
- * Copyright © 2016 Canonical Ltd.
+ * SPDX-License-Identifier: LGPL-2.1+
  *
- * Authors:
- * Christian Brauner <christian.brauner@mailbox.org>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#define _GNU_SOURCE
-#define __STDC_FORMAT_MACROS
+#include "config.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -43,12 +26,12 @@
 #include "macro.h"
 #include "utils.h"
 
-void test_path_simplify(void)
+void test_lxc_path_simplify(void)
 {
 	char *s = "/A///B//C/D/E/";
 	char *t;
 
-	t = path_simplify(s);
+	t = lxc_path_simplify(s);
 	if (!t)
 		exit(EXIT_FAILURE);
 
@@ -57,7 +40,7 @@ void test_path_simplify(void)
 
 	s = "/A";
 
-	t = path_simplify(s);
+	t = lxc_path_simplify(s);
 	if (!t)
 		exit(EXIT_FAILURE);
 
@@ -65,7 +48,7 @@ void test_path_simplify(void)
 	free(t);
 
 	s = "";
-	t = path_simplify(s);
+	t = lxc_path_simplify(s);
 	if (!t)
 		exit(EXIT_FAILURE);
 
@@ -74,7 +57,7 @@ void test_path_simplify(void)
 
 	s = "//";
 
-	t = path_simplify(s);
+	t = lxc_path_simplify(s);
 	if (!t)
 		exit(EXIT_FAILURE);
 
@@ -254,13 +237,13 @@ void test_lxc_safe_uint(void)
 	lxc_test_assert_abort((-EINVAL == lxc_safe_uint("-123", &n)));
 
 	ret = snprintf(numstr, sizeof(numstr), "%" PRIu64, (uint64_t)UINT_MAX);
-	if (ret < 0 || ret >= sizeof(numstr))
+	if (ret < 0 || (size_t)ret >= sizeof(numstr))
 		exit(EXIT_FAILURE);
 
 	lxc_test_assert_abort((0 == lxc_safe_uint(numstr, &n)) && n == UINT_MAX);
 
 	ret = snprintf(numstr, sizeof(numstr), "%" PRIu64, (uint64_t)UINT_MAX + 1);
-	if (ret < 0 || ret >= sizeof(numstr))
+	if (ret < 0 || (size_t)ret >= sizeof(numstr))
 		exit(EXIT_FAILURE);
 
 	lxc_test_assert_abort((-ERANGE == lxc_safe_uint(numstr, &n)));
@@ -287,25 +270,25 @@ void test_lxc_safe_int(void)
 	char numstr[INTTYPE_TO_STRLEN(uint64_t)];
 
 	ret = snprintf(numstr, sizeof(numstr), "%" PRIu64, (uint64_t)INT_MAX);
-	if (ret < 0 || ret >= sizeof(numstr))
+	if (ret < 0 || (size_t)ret >= sizeof(numstr))
 		exit(EXIT_FAILURE);
 
 	lxc_test_assert_abort((0 == lxc_safe_int(numstr, &n)) && n == INT_MAX);
 
 	ret = snprintf(numstr, sizeof(numstr), "%" PRIu64, (uint64_t)INT_MAX + 1);
-	if (ret < 0 || ret >= sizeof(numstr))
+	if (ret < 0 || (size_t)ret >= sizeof(numstr))
 		exit(EXIT_FAILURE);
 
 	lxc_test_assert_abort((-ERANGE == lxc_safe_int(numstr, &n)));
 
 	ret = snprintf(numstr, sizeof(numstr), "%" PRId64, (int64_t)INT_MIN);
-	if (ret < 0 || ret >= sizeof(numstr))
+	if (ret < 0 || (size_t)ret >= sizeof(numstr))
 		exit(EXIT_FAILURE);
 
 	lxc_test_assert_abort((0 == lxc_safe_int(numstr, &n)) && n == INT_MIN);
 
 	ret = snprintf(numstr, sizeof(numstr), "%" PRId64, (int64_t)INT_MIN - 1);
-	if (ret < 0 || ret >= sizeof(numstr))
+	if (ret < 0 || (size_t)ret >= sizeof(numstr))
 		exit(EXIT_FAILURE);
 
 	lxc_test_assert_abort((-ERANGE == lxc_safe_int(numstr, &n)));
@@ -551,7 +534,7 @@ void test_task_blocks_signal(void)
 
 		sigemptyset(&mask);
 
-		for (i = 0; i < (sizeof(signals) / sizeof(signals[0])); i++) {
+		for (i = 0; (size_t)i < (sizeof(signals) / sizeof(signals[0])); i++) {
 			ret = sigaddset(&mask, signals[i]);
 			if (ret < 0)
 				_exit(EXIT_FAILURE);
@@ -563,7 +546,7 @@ void test_task_blocks_signal(void)
 			_exit(EXIT_FAILURE);
 		}
 
-		for (i = 0; i < (sizeof(signals) / sizeof(signals[0])); i++) {
+		for (i = 0; (size_t)i < (sizeof(signals) / sizeof(signals[0])); i++) {
 			if (!task_blocks_signal(getpid(), signals[i])) {
 				lxc_error("Failed to detect blocked signal "
 					  "(idx = %d, signal number = %d)\n",
@@ -607,7 +590,7 @@ int main(int argc, char *argv[])
 {
 	test_lxc_string_replace();
 	test_lxc_string_in_array();
-	test_path_simplify();
+	test_lxc_path_simplify();
 	test_detect_ramfs_rootfs();
 	test_lxc_safe_uint();
 	test_lxc_safe_int();
