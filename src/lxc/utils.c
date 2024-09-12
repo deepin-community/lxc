@@ -19,8 +19,6 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
-/* Needs to be after sys/mount.h header */
-#include <linux/fs.h>
 #include <sys/param.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
@@ -34,6 +32,7 @@
 #include "lxclock.h"
 #include "memory_utils.h"
 #include "namespace.h"
+#include "open_utils.h"
 #include "parse.h"
 #include "process_utils.h"
 #include "syscall_wrappers.h"
@@ -61,6 +60,8 @@ lxc_log_define(utils, lxc);
  * if path is btrfs, tries to remove it and any subvolumes beneath it
  */
 extern bool btrfs_try_remove_subvol(const char *path);
+
+#ifdef IN_LIBLXC
 
 static int _recursive_rmdir(const char *dirname, dev_t pdev,
 			    const char *exclude, int level, bool onedev)
@@ -194,6 +195,8 @@ extern int lxc_rmdir_onedev(const char *path, const char *exclude)
 	return _recursive_rmdir(path, mystat.st_dev, exclude, 0, onedev);
 }
 
+#endif /* IN_LIBLXC */
+
 /* borrowed from iproute2 */
 extern int get_u16(unsigned short *val, const char *arg, int base)
 {
@@ -213,10 +216,13 @@ extern int get_u16(unsigned short *val, const char *arg, int base)
 	return 0;
 }
 
-int mkdir_p(const char *dir, mode_t mode)
+int lxc_mkdir_p(const char *dir, mode_t mode)
 {
 	const char *tmp = dir;
 	const char *orig = dir;
+
+	if (access(dir, F_OK) != -1)
+		return 0;
 
 	do {
 		__do_free char *makeme = NULL;
@@ -329,7 +335,25 @@ again:
 	return status;
 }
 
-#ifdef HAVE_OPENSSL
+bool wait_exited(pid_t pid)
+{
+	int status;
+
+	status = lxc_wait_for_pid_status(pid);
+	if (status < 0)
+		return log_error(false, "Failed to reap on child process %d", pid);
+	if (WIFSIGNALED(status))
+		return log_error(false, "Child process %d terminated by signal %d", pid, WTERMSIG(status));
+	if (!WIFEXITED(status))
+		return log_error(false, "Child did not termiate correctly");
+	if (WEXITSTATUS(status))
+		return log_error(false, "Child terminated with error %d", WEXITSTATUS(status));
+
+	TRACE("Reaped child process %d", pid);
+	return true;
+}
+
+#if HAVE_OPENSSL
 #include <openssl/evp.h>
 
 static int do_sha1_hash(const char *buf, int buflen, unsigned char *md_value,
@@ -507,6 +531,207 @@ int lxc_pclose(struct lxc_popen_FILE *fp)
 		return -1;
 
 	return wstatus;
+}
+
+static int run_buffer(char *buffer)
+{
+	__do_free char *output = NULL;
+	__do_lxc_pclose struct lxc_popen_FILE *f = NULL;
+	int fd, ret;
+
+	f = lxc_popen(buffer);
+	if (!f)
+		return log_error_errno(-1, errno, "Failed to popen() %s", buffer);
+
+	output = zalloc(LXC_LOG_BUFFER_SIZE);
+	if (!output)
+		return log_error_errno(-1, ENOMEM, "Failed to allocate memory for %s", buffer);
+
+	fd = fileno(f->f);
+	if (fd < 0)
+		return log_error_errno(-1, errno, "Failed to retrieve underlying file descriptor");
+
+	for (int i = 0; i < 10; i++) {
+		ssize_t bytes_read;
+
+		bytes_read = lxc_read_nointr(fd, output, LXC_LOG_BUFFER_SIZE - 1);
+		if (bytes_read > 0) {
+			output[bytes_read] = '\0';
+			DEBUG("Script %s produced output: %s", buffer, output);
+			continue;
+		}
+
+		break;
+	}
+
+	ret = lxc_pclose(move_ptr(f));
+	if (ret == -1)
+		return log_error_errno(-1, errno, "Script exited with error");
+	else if (WIFEXITED(ret) && WEXITSTATUS(ret) != 0)
+		return log_error(-1, "Script exited with status %d", WEXITSTATUS(ret));
+	else if (WIFSIGNALED(ret))
+		return log_error(-1, "Script terminated by signal %d", WTERMSIG(ret));
+
+	return 0;
+}
+
+int run_script_argv(const char *name, unsigned int hook_version,
+		    const char *section, const char *script,
+		    const char *hookname, char **argv)
+{
+	__do_free char *buffer = NULL;
+	int buf_pos, i, ret;
+	size_t size = 0;
+
+	if (hook_version == 0)
+		INFO("Executing script \"%s\" for container \"%s\", config section \"%s\"",
+		     script, name, section);
+	else
+		INFO("Executing script \"%s\" for container \"%s\"", script, name);
+
+	for (i = 0; argv && argv[i]; i++)
+		size += strlen(argv[i]) + 1;
+
+	size += STRLITERALLEN("exec");
+	size++;
+	size += strlen(script);
+	size++;
+
+	if (size > INT_MAX)
+		return -EFBIG;
+
+	if (hook_version == 0) {
+		size += strlen(hookname);
+		size++;
+
+		size += strlen(name);
+		size++;
+
+		size += strlen(section);
+		size++;
+
+		if (size > INT_MAX)
+			return -EFBIG;
+	}
+
+	buffer = zalloc(size);
+	if (!buffer)
+		return -ENOMEM;
+
+	if (hook_version == 0)
+		buf_pos = strnprintf(buffer, size, "exec %s %s %s %s", script, name, section, hookname);
+	else
+		buf_pos = strnprintf(buffer, size, "exec %s", script);
+	if (buf_pos < 0)
+		return log_error_errno(-1, errno, "Failed to create command line for script \"%s\"", script);
+
+	if (hook_version == 1) {
+		ret = setenv("LXC_HOOK_TYPE", hookname, 1);
+		if (ret < 0) {
+			return log_error_errno(-1, errno, "Failed to set environment variable: LXC_HOOK_TYPE=%s", hookname);
+		}
+		TRACE("Set environment variable: LXC_HOOK_TYPE=%s", hookname);
+
+		ret = setenv("LXC_HOOK_SECTION", section, 1);
+		if (ret < 0)
+			return log_error_errno(-1, errno, "Failed to set environment variable: LXC_HOOK_SECTION=%s", section);
+		TRACE("Set environment variable: LXC_HOOK_SECTION=%s", section);
+
+		if (strequal(section, "net")) {
+			char *parent;
+
+			if (!argv || !argv[0])
+				return -1;
+
+			ret = setenv("LXC_NET_TYPE", argv[0], 1);
+			if (ret < 0)
+				return log_error_errno(-1, errno, "Failed to set environment variable: LXC_NET_TYPE=%s", argv[0]);
+			TRACE("Set environment variable: LXC_NET_TYPE=%s", argv[0]);
+
+			parent = argv[1] ? argv[1] : "";
+
+			if (strequal(argv[0], "macvlan")) {
+				ret = setenv("LXC_NET_PARENT", parent, 1);
+				if (ret < 0)
+					return log_error_errno(-1, errno, "Failed to set environment variable: LXC_NET_PARENT=%s", parent);
+				TRACE("Set environment variable: LXC_NET_PARENT=%s", parent);
+			} else if (strequal(argv[0], "phys")) {
+				ret = setenv("LXC_NET_PARENT", parent, 1);
+				if (ret < 0)
+					return log_error_errno(-1, errno, "Failed to set environment variable: LXC_NET_PARENT=%s", parent);
+				TRACE("Set environment variable: LXC_NET_PARENT=%s", parent);
+			} else if (strequal(argv[0], "veth")) {
+				char *peer = argv[2] ? argv[2] : "";
+
+				ret = setenv("LXC_NET_PEER", peer, 1);
+				if (ret < 0)
+					return log_error_errno(-1, errno, "Failed to set environment variable: LXC_NET_PEER=%s", peer);
+				TRACE("Set environment variable: LXC_NET_PEER=%s", peer);
+
+				ret = setenv("LXC_NET_PARENT", parent, 1);
+				if (ret < 0)
+					return log_error_errno(-1, errno, "Failed to set environment variable: LXC_NET_PARENT=%s", parent);
+				TRACE("Set environment variable: LXC_NET_PARENT=%s", parent);
+			}
+		}
+	}
+
+	for (i = 0; argv && argv[i]; i++) {
+		size_t len = size - buf_pos;
+
+		ret = strnprintf(buffer + buf_pos, len, " %s", argv[i]);
+		if (ret < 0)
+			return log_error_errno(-1, errno, "Failed to create command line for script \"%s\"", script);
+		buf_pos += ret;
+	}
+
+	return run_buffer(buffer);
+}
+
+int run_script(const char *name, const char *section, const char *script, ...)
+{
+	__do_free char *buffer = NULL;
+	int ret;
+	char *p;
+	va_list ap;
+	size_t size = 0;
+
+	INFO("Executing script \"%s\" for container \"%s\", config section \"%s\"",
+	     script, name, section);
+
+	va_start(ap, script);
+	while ((p = va_arg(ap, char *)))
+		size += strlen(p) + 1;
+	va_end(ap);
+
+	size += STRLITERALLEN("exec");
+	size += strlen(script);
+	size += strlen(name);
+	size += strlen(section);
+	size += 4;
+
+	if (size > INT_MAX)
+		return -1;
+
+	buffer = must_realloc(NULL, size);
+	ret = strnprintf(buffer, size, "exec %s %s %s", script, name, section);
+	if (ret < 0)
+		return -1;
+
+	va_start(ap, script);
+	while ((p = va_arg(ap, char *))) {
+		int len = size - ret;
+		int rc;
+		rc = strnprintf(buffer + ret, len, " %s", p);
+		if (rc < 0) {
+			va_end(ap);
+			return -1;
+		}
+		ret += rc;
+	}
+	va_end(ap);
+
+	return run_buffer(buffer);
 }
 
 int randseed(bool srand_it)
@@ -1076,7 +1301,7 @@ int __safe_mount_beneath_at(int beneath_fd, const char *src, const char *dst, co
 			    unsigned int flags, const void *data)
 {
 	__do_close int source_fd = -EBADF, target_fd = -EBADF;
-	struct lxc_open_how how = {
+	struct open_how how = {
 		.flags		= PROTECT_OPATH_DIRECTORY,
 		.resolve	= PROTECT_LOOKUP_BENEATH_WITH_MAGICLINKS,
 	};
@@ -1670,7 +1895,7 @@ static int process_dead(/* takes */ int status_fd)
 	if (dupfd < 0)
 		return -1;
 
-	if (fd_cloexec(dupfd, true) < 0)
+	if (lxc_fd_cloexec(dupfd, true) < 0)
 		return -1;
 
 	f = fdopen(dupfd, "re");
@@ -1771,7 +1996,7 @@ bool lxc_can_use_pidfd(int pidfd)
 	int ret;
 
 	if (pidfd < 0)
-		return log_error(false, "Kernel does not support pidfds");
+		return log_trace(false, "Kernel does not support pidfds");
 
 	/*
 	 * We don't care whether or not children were in a waitable state. We
@@ -1836,7 +2061,7 @@ int fix_stdio_permissions(uid_t uid)
 			continue;
 		}
 
-		ret = fchmod(std_fds[i], 0700);
+		ret = fchmod(std_fds[i], 0600);
 		if (ret) {
 			SYSTRACE("Failed to chmod standard I/O file descriptor %d", std_fds[i]);
 			fret = -1;
@@ -1844,18 +2069,6 @@ int fix_stdio_permissions(uid_t uid)
 	}
 
 	return fret;
-}
-
-bool multiply_overflow(int64_t base, uint64_t mult, int64_t *res)
-{
-	if (base > 0 && base > (int64_t)(INT64_MAX / mult))
-		return false;
-
-	if (base < 0 && base < (int64_t)(INT64_MIN / mult))
-		return false;
-
-	*res = (int64_t)(base * mult);
-	return true;
 }
 
 int print_r(int fd, const char *path)
@@ -1923,5 +2136,39 @@ int print_r(int fd, const char *path)
 	else
 		INFO("mode(%o):uid(%d):gid(%d) -> %s",
 		     (st.st_mode & ~S_IFMT), st.st_uid, st.st_gid, maybe_empty(path));
+	return ret;
+}
+
+uint64_t get_fssize(char *s)
+{
+	uint64_t ret;
+	char *end;
+
+	ret = strtoull(s, &end, 0);
+	if (end == s) {
+		ERROR("Invalid blockdev size '%s', using default size", s);
+		return 0;
+	}
+
+	while (isblank(*end))
+		end++;
+
+	if (*end == '\0') {
+		ret *= 1024ULL * 1024ULL; /* MB by default */
+	} else if (*end == 'b' || *end == 'B') {
+		ret *= 1ULL;
+	} else if (*end == 'k' || *end == 'K') {
+		ret *= 1024ULL;
+	} else if (*end == 'm' || *end == 'M') {
+		ret *= 1024ULL * 1024ULL;
+	} else if (*end == 'g' || *end == 'G') {
+		ret *= 1024ULL * 1024ULL * 1024ULL;
+	} else if (*end == 't' || *end == 'T') {
+		ret *= 1024ULL * 1024ULL * 1024ULL * 1024ULL;
+	} else {
+		ERROR("Invalid blockdev unit size '%c' in '%s', using default size", *end, s);
+		return 0;
+	}
+
 	return ret;
 }

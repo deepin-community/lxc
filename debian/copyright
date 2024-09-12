@@ -6,48 +6,26 @@ Source: http://linuxcontainers.org/downloads/
 Files: *
 Copyright: 2007-2009 Daniel Lezcano <daniel.lezcano@free.fr>
            2007-2012 IBM Corporation
-           2011-2022 Serge Hallyn <serge@hallyn.com>
-           2012-2022 Stéphane Graber <stgraber@stgraber.org>
-           2015-2022 Canonical Ltd
-           2015-2022 Christian Brauner <christian.brauner@ubuntu.com>
-           2017 Adrian Reber <areber@redhat.com>
-License: LGPL-2.1+
-
-Files: src/lxc/*
-Copyright: 2007-2009 Daniel Lezcano <daniel.lezcano@free.fr>
-           2011-2022 Serge Hallyn <serge@hallyn.com>
-           2012-2022 Stéphane Graber <stgraber@stgraber.org>
-           2012-2015 Dwight Engen <dwight.engen@oracle.com>
-           2015-2022 Canonical Ltd
-           2015-2022 Christian Brauner <christian.brauner@ubuntu.com>
+           2011-2024 Serge Hallyn <serge@hallyn.com>
+           2012-2024 Stéphane Graber <stgraber@stgraber.org>
+           2015-2024 Canonical Ltd
+           2015-2024 Christian Brauner <christian.brauner@ubuntu.com>
            2017 Adrian Reber <areber@redhat.com>
 License: LGPL-2.1+
 
 Files: src/lxc/tools/lxc_ls.c src/lxc/tools/lxc_copy.c src/lxc/tools/lxc_destroy.c src/lxc/tools/lxc_checkpoint.c src/lxc/tools/lxc_create.c src/lxc/tools/lxc_snapshot.c
 Copyright: 2007-2009 Daniel Lezcano <daniel.lezcano@free.fr>
-           2011-2022 Serge Hallyn <serge@hallyn.com>
-           2012-2022 Stéphane Graber <stgraber@stgraber.org>
+           2011-2024 Serge Hallyn <serge@hallyn.com>
+           2012-2024 Stéphane Graber <stgraber@stgraber.org>
            2012-2015 Dwight Engen <dwight.engen@oracle.com>
-           2015-2022 Canonical Ltd
-           2015-2022 Christian Brauner <christian.brauner@ubuntu.com>
+           2015-2024 Canonical Ltd
+           2015-2024 Christian Brauner <christian.brauner@ubuntu.com>
            2017 Adrian Reber <areber@redhat.com>
-License: GPL-2+
-
-Files: src/include/*
-Copyright: 2012-2022 Stéphane Graber <stgraber@stgraber.org>
-           2015-2022 Canonical Ltd
-           2015-2022 Christian Brauner <christian.brauner@ubuntu.com>
-License: LGPL-2.1+
-
-Files: src/include/getgrgid_r.c src/include/getgrgid_r.h src/include/strchrnul.c src/include/strchrnul.h src/include/strlcat.c src/include/strlcat.h src/include/strlcpy.c src/include/strlcpy.h
-Copyright: 2012-2022 Stéphane Graber <stgraber@stgraber.org>
-           2015-2022 Canonical Ltd
-           2015-2022 Christian Brauner <christian.brauner@ubuntu.com>
-License: GPL-2+
+License: GPL-2
 
 Files: src/include/bpf_common.h src/include/bpf.h
 Copyright: Copyright (c) 2011-2014 PLUMgrid, http://plumgrid.com
-License: GPL-2+
+License: GPL-2
 
 Files: src/include/prlimit.c src/include/prlimit.h
 Copyright: 2008 The Android Open Source Project
@@ -68,12 +46,12 @@ Copyright: 2011-2022 Serge Hallyn <serge@hallyn.com>
            2012-2015 Dwight Engen <dwight.engen@oracle.com>
            2012-2013 Oracle
            2015-2022 Christian Brauner <christian.brauner@ubuntu.com>
-License: GPL-2+
+License: GPL-2
 
 Files: src/tests/console.c src/tests/attach.c
 Copyright: 2012-2015 Dwight Engen <dwight.engen@oracle.com>
            2012-2013 Oracle
-License: GPL-2+
+License: GPL-2
 
 Files: src/tests/lxc_raw_clone.c src/tests/lxc-test-apparmor-generated src/tests/lxc-test-apparmor-mount src/tests/lxc-test-automount src/tests/lxc-test-autostart src/tests/lxc-test-cloneconfig src/tests/lxc-test-createconfig src/tests/lxc-test-exit-code src/tests/lxctest.h src/tests/lxc-test-lxc-attach src/tests/lxc-test-no-new-privs src/tests/lxc-test-procsys src/tests/lxc-test-rootfs src/tests/lxc-test-snapdeps src/tests/lxc-test-unpriv src/tests/lxc-test-usernic.in src/tests/lxc-test-utils.c src/tests/reboot.c
 Copyright: 2011-2022 Serge Hallyn <serge@hallyn.com>
@@ -86,12 +64,12 @@ License: LGPL-2.1+
 
 Files: hooks/clonehostname
 Copyright: 2013 Oracle
-License: GPL-2+
+License: GPL-2
 
 Files: hooks/dhclient-script
 Copyright: 1997 Dan Halbert
            1999 Brian J. Murrell
-License: GPL-2+
+License: LGPL-2.1+
 
 Files: hooks/mountecryptfsroot
 Copyright: 2011-2013 Canonical Ltd
@@ -103,18 +81,55 @@ License: LGPL-2.1+
 
 Files: hooks/squid-deb-proxy-client
 Copyright: 2014 Christopher Glass.
-License: GPL-2+
+License: GPL-2
 
 Files: hooks/unmount-namespace.c
 Copyright: 2015 Wolfgang Bumiller <w.bumiller@proxmox.com>
-License: GPL-2+
+License: LGPL-2.1+
 
 Files: debian/*
 Copyright: 2011-2015 Daniel Baumann <mail@daniel-baumann.ch>
            2015-2022 Antonio Terceiro <terceiro@debian.org>
-           2016-2017 Evgeni Golov <evgeni@debian.org>
+           2016-2019 Evgeni Golov <evgeni@debian.org>
            2018 Salvatore Bonaccorso <carnil@debian.org>
-           2018-2022 Pierre-Elliott Bécue <peb@debian.org>
+           2018-2024 Pierre-Elliott Bécue <peb@debian.org>
+           2022-2024 Mathias Gibbens
+License: GPL-2+
+
+Files: debian/po/de.po
+Copyright: 2018 Chris Leick
+License: GPL-2+
+
+Files: debian/po/es.po
+Copyright: 2011, 2014 Camaleón
+License: GPL-2+
+
+Files: debian/po/fr.po
+Copyright: 2018 Pierre-Elliott Bécue
+License: GPL-2+
+
+Files: debian/po/it.po
+Copyright: 2023 Ceppo
+License: GPL-2+
+
+Files: debian/po/nl.po
+Copyright: 2019 Frans Spiesschaert
+License: GPL-2+
+
+Files: debian/po/pt_BR.po
+Copyright: 2019 Adriano Rafael Gomes
+License: GPL-2+
+
+Files: debian/po/pt.po
+Copyright: 2019 Américo Monteiro
+License: GPL-2+
+
+Files: debian/po/ro.po
+Copyright: 2023 Remus-Gabriel Chelu
+License: GPL-2+
+
+Files: debian/po/ru.po
+Copyright: 2019 Lev Lamberov
 License: GPL-2+
 
 License: BSD-2-clause
@@ -138,11 +153,26 @@ License: BSD-2-clause
  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+License: GPL-2
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, version 2 of the License.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program. If not, see <http://www.gnu.org/licenses/>.
+ .
+ The complete text of the GNU General Public License
+ can be found in /usr/share/common-licenses/GPL-2 file.
+
 License: GPL-2+
  This program is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
- the Free Software Foundation, either version 2 of the License, or
- (at your option) any later version.
+ the Free Software Foundation, version 2 or any later version of the License.
  .
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of

@@ -18,6 +18,7 @@
 #include "file_utils.h"
 #include "log.h"
 #include "lsm.h"
+#include "open_utils.h"
 #include "parse.h"
 #include "process_utils.h"
 #include "utils.h"
@@ -112,25 +113,14 @@ static const char AA_PROFILE_BASE[] =
 "  deny /sys/kernel/debug/{,**} rwklx,\n"
 "\n"
 "  # allow paths to be made dependent, shared, private or unbindable\n"
-"  # TODO: This currently doesn't work due to the apparmor parser treating those as allowing all mounts.\n"
-"#  mount options=(rw,make-slave) -> **,\n"
-"#  mount options=(rw,make-rslave) -> **,\n"
-"#  mount options=(rw,make-shared) -> **,\n"
-"#  mount options=(rw,make-rshared) -> **,\n"
-"#  mount options=(rw,make-private) -> **,\n"
-"#  mount options=(rw,make-rprivate) -> **,\n"
-"#  mount options=(rw,make-unbindable) -> **,\n"
-"#  mount options=(rw,make-runbindable) -> **,\n"
-"\n"
-"# Allow limited modification of mount propagation\n"
-"  mount options=(rw,make-slave) -> /,\n"
-"  mount options=(rw,make-rslave) -> /,\n"
-"  mount options=(rw,make-shared) -> /,\n"
-"  mount options=(rw,make-rshared) -> /,\n"
-"  mount options=(rw,make-private) -> /,\n"
-"  mount options=(rw,make-rprivate) -> /,\n"
-"  mount options=(rw,make-unbindable) -> /,\n"
-"  mount options=(rw,make-runbindable) -> /,\n"
+"  mount options=(rw,make-slave) -> /{,**},\n"
+"  mount options=(rw,make-rslave) -> /{,**},\n"
+"  mount options=(rw,make-shared) -> /{,**},\n"
+"  mount options=(rw,make-rshared) -> /{,**},\n"
+"  mount options=(rw,make-private) -> /{,**},\n"
+"  mount options=(rw,make-rprivate) -> /{,**},\n"
+"  mount options=(rw,make-unbindable) -> /{,**},\n"
+"  mount options=(rw,make-runbindable) -> /{,**},\n"
 "\n"
 "  # allow bind-mounts of anything except /proc, /sys and /dev\n"
 "  mount options=(rw,bind) /[^spd]*{,/**},\n"
@@ -328,10 +318,10 @@ static const char AA_PROFILE_NESTING_BASE[] =
 "  mount fstype=proc -> /usr/lib/*/lxc/**,\n"
 "  mount fstype=sysfs -> /usr/lib/*/lxc/**,\n"
 "\n"
-"  # Allow nested LXD\n"
-"  mount none -> /var/lib/lxd/shmounts/,\n"
-"  mount /var/lib/lxd/shmounts/ -> /var/lib/lxd/shmounts/,\n"
-"  mount options=bind /var/lib/lxd/shmounts/** -> /var/lib/lxd/**,\n"
+"  # Allow nested Incus\n"
+"  mount none -> /var/lib/incus/shmounts/,\n"
+"  mount /var/lib/incus/shmounts/ -> /var/lib/incus/shmounts/,\n"
+"  mount options=bind /var/lib/incus/shmounts/** -> /var/lib/incus/**,\n"
 "\n"
 "  # TODO: There doesn't seem to be a way to ask for:\n"
 "  # mount options=(ro,nosuid,nodev,noexec,remount,bind),\n"
@@ -346,14 +336,14 @@ static const char AA_PROFILE_UNPRIVILEGED[] =
 "  pivot_root,\n"
 "\n"
 "  # Allow modifying mount propagation\n"
-"  mount options=(rw,make-slave) -> **,\n"
-"  mount options=(rw,make-rslave) -> **,\n"
-"  mount options=(rw,make-shared) -> **,\n"
-"  mount options=(rw,make-rshared) -> **,\n"
-"  mount options=(rw,make-private) -> **,\n"
-"  mount options=(rw,make-rprivate) -> **,\n"
-"  mount options=(rw,make-unbindable) -> **,\n"
-"  mount options=(rw,make-runbindable) -> **,\n"
+"  mount options=(rw,make-slave) -> /{,**},\n"
+"  mount options=(rw,make-rslave) -> /{,**},\n"
+"  mount options=(rw,make-shared) -> /{,**},\n"
+"  mount options=(rw,make-rshared) -> /{,**},\n"
+"  mount options=(rw,make-private) -> /{,**},\n"
+"  mount options=(rw,make-rprivate) -> /{,**},\n"
+"  mount options=(rw,make-unbindable) -> /{,**},\n"
+"  mount options=(rw,make-runbindable) -> /{,**},\n"
 "\n"
 "  # Allow all bind-mounts\n"
 "  mount options=(rw,bind),\n"
@@ -972,12 +962,14 @@ static int load_apparmor_profile(struct lsm_ops *ops, struct lxc_conf *conf, con
 			goto out;
 		}
 		old_len = profile_sb.st_size;
-		old_content = lxc_strmmap(NULL, old_len, PROT_READ,
-		                          MAP_PRIVATE, profile_fd, 0);
-		if (!old_content) {
-			SYSERROR("Failed to mmap old profile from %s",
-			         profile_path);
-			goto out;
+		if (old_len) {
+			old_content = lxc_strmmap(NULL, old_len, PROT_READ,
+						  MAP_PRIVATE, profile_fd, 0);
+			if (old_content == MAP_FAILED) {
+				SYSERROR("Failed to mmap old profile from %s",
+					 profile_path);
+				goto out;
+			}
 		}
 	} else if (errno != ENOENT) {
 		SYSERROR("Error reading old profile from %s", profile_path);
@@ -993,14 +985,14 @@ static int load_apparmor_profile(struct lsm_ops *ops, struct lxc_conf *conf, con
 	if (!old_content || old_len != content_len || memcmp(old_content, new_content, content_len) != 0) {
 		char *path;
 
-		ret = mkdir_p(APPARMOR_CACHE_DIR, 0755);
+		ret = lxc_mkdir_p(APPARMOR_CACHE_DIR, 0755);
 		if (ret < 0) {
 			SYSERROR("Error creating AppArmor profile cache directory " APPARMOR_CACHE_DIR);
 			goto out;
 		}
 
 		path = apparmor_dir(conf->name, lxcpath);
-		ret = mkdir_p(path, 0755);
+		ret = lxc_mkdir_p(path, 0755);
 		if (ret < 0) {
 			SYSERROR("Error creating AppArmor profile directory: %s", path);
 			free(path);

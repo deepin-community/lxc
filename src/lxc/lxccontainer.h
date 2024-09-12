@@ -884,6 +884,23 @@ struct lxc_container {
 	 * \return Mount fd of the container's devpts instance.
 	 */
 	int (*devpts_fd)(struct lxc_container *c);
+
+	/*!
+	 * \private
+	 * SO_RCVTIMEO for LXC client_fd socket.
+	 */
+	int rcv_timeout;
+
+	/*!
+	 * \brief Set response receive timeout for LXC commands
+	 *
+	 * \param c Container
+	 * \param timeout Seconds to wait before returning false.
+	 *  (-1 to wait forever).
+	 *
+	 * \return \c true on success, else \c false.
+	 */
+	bool (*set_timeout)(struct lxc_container *c, int timeout);
 };
 
 /*!

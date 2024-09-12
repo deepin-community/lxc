@@ -1,4 +1,7 @@
 #!/bin/bash
+#
+# SPDX-License-Identifier: LGPL-2.1+
+#
 ## If the container being cloned has one or more lxc.hook.clone
 ## specified, then the specified hooks will be called for the new
 ## container.  The arguments passed to the clone hook are:
@@ -94,11 +97,6 @@ prep() {
         # seems like not the greatest interface, so all we'll do is mention it.
         error "${0##*}: usage failed, continuing with defaults"
     fi
-
-    [ "$create_etc_init" -eq 0 ] ||
-        echo "#upstart needs help for overlayfs (LP: #1213925)." > \
-            "$root_d/etc/init/.overlayfs-upstart-helper" ||
-        { error "failed to create /etc/init in overlay"; return 1; }
 
     local seed_d=""
     seed_d="$root_d/var/lib/cloud/seed/nocloud-net"

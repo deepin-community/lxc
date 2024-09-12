@@ -1,22 +1,11 @@
 /* liblxcapi
  *
- * Copyright © 2017 Christian Brauner <christian.brauner@ubuntu.com>.
+ * SPDX-License-Identifier: GPL-2.0-only
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#define __STDC_FORMAT_MACROS
+#include "config.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -132,6 +121,11 @@ int main(int argc, char *argv[])
 		goto on_error_stop;
 	}
 
+	if (!c->wait(c, "STOPPED", 5)) {
+		lxc_error("%s\n", "Failed waiting for container \"console-log\" to stop");
+		goto on_error_stop;
+	}
+
 	c->clear_config(c);
 
 	if (!c->load_config(c, NULL)) {
@@ -161,6 +155,11 @@ int main(int argc, char *argv[])
 
 	if (!c->stop(c)) {
 		lxc_error("%s\n", "Failed to stop container \"console-log\"");
+		goto on_error_stop;
+	}
+
+	if (!c->wait(c, "STOPPED", 5)) {
+		lxc_error("%s\n", "Failed waiting for container \"console-log\" to stop");
 		goto on_error_stop;
 	}
 

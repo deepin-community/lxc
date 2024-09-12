@@ -186,9 +186,12 @@ Options :\n\
 	.options = my_longopts,
 	.parser = my_parser,
 	.ls_nesting = 0,
+	.log_priority = "ERROR",
+	.log_file     = "none",
 };
 
-int main(int argc, char *argv[])
+int __attribute__((weak, alias("lxc_ls_main"))) main(int argc, char *argv[]);
+int lxc_ls_main(int argc, char *argv[])
 {
 	int ret = EXIT_FAILURE;
 	struct lxc_log log;

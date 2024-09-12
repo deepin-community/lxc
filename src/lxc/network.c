@@ -113,12 +113,17 @@ char *lxc_ifname_alnum_case_sensitive(char *template)
 
 	return template;
 }
+
+#ifdef IN_LIBLXC
+
 static const char loop_device[] = "lo";
+
+#endif /* IN_LIBLXC */
 
 static int lxc_ip_route_dest(__u16 nlmsg_type, int family, int ifindex, void *dest, unsigned int netmask)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int addrlen, err;
 	struct rtmsg *rt;
@@ -171,6 +176,8 @@ static int lxc_ipv6_dest_add(int ifindex, struct in6_addr *dest, unsigned int ne
 {
 	return lxc_ip_route_dest(RTM_NEWROUTE, AF_INET6, ifindex, dest, netmask);
 }
+
+#ifdef IN_LIBLXC
 
 static int lxc_ipv4_dest_del(int ifindex, struct in_addr *dest, unsigned int netmask)
 {
@@ -254,7 +261,7 @@ static int setup_ipv6_addr_routes(struct lxc_netdev *netdev)
 static int lxc_ip_neigh_proxy(__u16 nlmsg_type, int family, int ifindex, void *dest)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int addrlen, err;
 	struct ndmsg *rt;
@@ -317,7 +324,7 @@ struct bridge_vlan_info {
 static int lxc_bridge_vlan(unsigned int ifindex, unsigned short operation, unsigned short vlan_id, bool tagged)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err;
 	struct ifinfomsg *ifi;
@@ -465,7 +472,7 @@ static int setup_veth_native_bridge_vlan(char *veth1, struct lxc_netdev *netdev)
 			return log_error_errno(-1, EINVAL, "Failed parsing default_pvid of \"%s\"", netdev->link);
 
 		/* If the default PVID on the port is not the specified untagged VLAN, then delete it. */
-		if (default_pvid != netdev->priv.veth_attr.vlan_id) {
+		if (default_pvid != 0 && default_pvid != netdev->priv.veth_attr.vlan_id) {
 			err = lxc_bridge_vlan_del(veth1index, default_pvid);
 			if (err)
 				return log_error_errno(err, errno, "Failed to delete default untagged vlan \"%u\" on \"%s\"", default_pvid, veth1);
@@ -656,7 +663,8 @@ static int netdev_configure_server_veth(struct lxc_handler *handler, struct lxc_
 		}
 	}
 
-	err = lxc_veth_create(veth1, veth2, handler->pid, mtu);
+	err = lxc_veth_create(veth1, veth2, handler->pid, mtu,
+			      netdev->priv.veth_attr.n_rxqueues, netdev->priv.veth_attr.n_txqueues);
 	if (err)
 		return log_error_errno(-1, -err, "Failed to create veth pair \"%s\" and \"%s\"", veth1, veth2);
 
@@ -706,6 +714,26 @@ static int netdev_configure_server_veth(struct lxc_handler *handler, struct lxc_
 	}
 
 	if (!is_empty_string(netdev->link) && netdev->priv.veth_attr.mode == VETH_MODE_BRIDGE) {
+		char path[PATH_MAX];
+		__do_close int disable_ipv6_fd = -EBADF;
+
+		/* Disable link-local IPv6 addresses for the host's end of the veth. */
+		snprintf(path, PATH_MAX, "/proc/sys/net/ipv6/conf/%s/disable_ipv6", veth1);
+		disable_ipv6_fd = open(path, O_RDWR);
+
+		/* Don't error if the file doesn't exist. */
+		if (disable_ipv6_fd < 0 && errno != ENOENT) {
+			SYSERROR("Failed to disable IPv6 link-local addresses for veth pair \"%s\"", veth1);
+			goto out_delete;
+		} else if (disable_ipv6_fd >= 0) {
+			err = write(disable_ipv6_fd, "1", 1);
+			if (err < 0) {
+				SYSERROR("Failed to disable IPv6 link-local addresses for veth pair \"%s\"", veth1);
+				goto out_delete;
+			}
+			close(disable_ipv6_fd);
+		}
+
 		if (!lxc_nic_exists(netdev->link)) {
 			SYSERROR("Failed to attach \"%s\" to bridge \"%s\", bridge interface doesn't exist", veth1, netdev->link);
 			goto out_delete;
@@ -936,7 +964,7 @@ on_error:
 static int lxc_ipvlan_create(const char *parent, const char *name, int mode, int isolation)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err, index, len;
 	struct ifinfomsg *ifi;
@@ -1266,6 +1294,8 @@ static netdev_configure_server_cb netdev_configure_server[LXC_NET_MAXCONFTYPE + 
 	[LXC_NET_NONE]    = netdev_configure_server_none,
 };
 
+#endif /* IN_LIBLXC */
+
 static int __netdev_configure_container_common(struct lxc_netdev *netdev)
 {
 	char current_ifname[IFNAMSIZ];
@@ -1353,6 +1383,8 @@ static netdev_configure_container_cb netdev_configure_container[LXC_NET_MAXCONFT
 	[LXC_NET_EMPTY]   = netdev_configure_container_empty,
 	[LXC_NET_NONE]    = netdev_configure_container_none,
 };
+
+#ifdef IN_LIBLXC
 
 static int netdev_shutdown_server_veth(struct lxc_handler *handler, struct lxc_netdev *netdev)
 {
@@ -1495,10 +1527,12 @@ static netdev_shutdown_server_cb netdev_deconf[LXC_NET_MAXCONFTYPE + 1] = {
 	[LXC_NET_NONE]    = netdev_shutdown_server_none,
 };
 
+#endif /* IN_LIBLXC */
+
 static int lxc_netdev_move_by_index_fd(int ifindex, int fd, const char *ifname)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err;
 	struct ifinfomsg *ifi;
@@ -1533,7 +1567,7 @@ static int lxc_netdev_move_by_index_fd(int ifindex, int fd, const char *ifname)
 int lxc_netdev_move_by_index(int ifindex, pid_t pid, const char *ifname)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err;
 	struct ifinfomsg *ifi;
@@ -1691,7 +1725,7 @@ int lxc_netdev_move_by_name(const char *ifname, pid_t pid, const char* newname)
 int lxc_netdev_delete_by_index(int ifindex)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err;
 	struct ifinfomsg *ifi;
@@ -1735,7 +1769,7 @@ int lxc_netdev_delete_by_name(const char *name)
 int lxc_netdev_rename_by_index(int ifindex, const char *newname)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err, len;
 	struct ifinfomsg *ifi;
@@ -1790,7 +1824,7 @@ int lxc_netdev_rename_by_name(const char *oldname, const char *newname)
 int netdev_set_flag(const char *name, int flag)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err, index, len;
 	struct ifinfomsg *ifi;
@@ -1833,7 +1867,7 @@ int netdev_set_flag(const char *name, int flag)
 static int netdev_get_flag(const char *name, int *flag)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err, index, len;
 	struct ifinfomsg *ifi;
@@ -1909,7 +1943,7 @@ int lxc_netdev_isup(const char *name)
 int netdev_get_mtu(int ifindex)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int readmore = 0;
 	__u32 recv_len = 0;
@@ -2021,7 +2055,7 @@ int netdev_get_mtu(int ifindex)
 int lxc_netdev_set_mtu(const char *name, int mtu)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err, len;
 	struct ifinfomsg *ifi;
@@ -2070,10 +2104,11 @@ int lxc_netdev_down(const char *name)
 	return netdev_set_flag(name, 0);
 }
 
-int lxc_veth_create(const char *name1, const char *name2, pid_t pid, unsigned int mtu)
+int lxc_veth_create(const char *name1, const char *name2, pid_t pid, unsigned int mtu,
+                    int n_rxqueues, int n_txqueues)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err, len;
 	struct ifinfomsg *ifi;
@@ -2130,6 +2165,12 @@ int lxc_veth_create(const char *name1, const char *name2, pid_t pid, unsigned in
 	if (nla_put_string(nlmsg, IFLA_IFNAME, name2))
 		return ret_errno(ENOMEM);
 
+	if (n_rxqueues > 0 && nla_put_u32(nlmsg, IFLA_NUM_RX_QUEUES, (unsigned int)n_rxqueues))
+		return ret_errno(ENOMEM);
+
+	if (n_txqueues > 0 && nla_put_u32(nlmsg, IFLA_NUM_TX_QUEUES, (unsigned int)n_txqueues))
+		return ret_errno(ENOMEM);
+
 	if (mtu > 0 && nla_put_u32(nlmsg, IFLA_MTU, mtu))
 		return ret_errno(ENOMEM);
 
@@ -2143,6 +2184,12 @@ int lxc_veth_create(const char *name1, const char *name2, pid_t pid, unsigned in
 	if (nla_put_string(nlmsg, IFLA_IFNAME, name1))
 		return ret_errno(ENOMEM);
 
+	if (n_txqueues > 0 && nla_put_u32(nlmsg, IFLA_NUM_RX_QUEUES, (unsigned int)n_txqueues))
+		return ret_errno(ENOMEM);
+
+	if (n_rxqueues > 0 && nla_put_u32(nlmsg, IFLA_NUM_TX_QUEUES, (unsigned int)n_rxqueues))
+		return ret_errno(ENOMEM);
+
 	return netlink_transaction(nlh_ptr, nlmsg, answer);
 }
 
@@ -2150,7 +2197,7 @@ int lxc_veth_create(const char *name1, const char *name2, pid_t pid, unsigned in
 int lxc_vlan_create(const char *parent, const char *name, unsigned short vlanid)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err, len, lindex;
 	struct ifinfomsg *ifi;
@@ -2218,7 +2265,7 @@ int lxc_vlan_create(const char *parent, const char *name, unsigned short vlanid)
 int lxc_macvlan_create(const char *parent, const char *name, int mode)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int err, index, len;
 	struct ifinfomsg *ifi;
@@ -2346,6 +2393,8 @@ static int neigh_proxy_set(const char *ifname, int family, int flag)
 	return proc_sys_net_write(path, flag ? "1" : "0");
 }
 
+#ifdef IN_LIBLXC
+
 static int lxc_is_ip_neigh_proxy_enabled(const char *ifname, int family)
 {
 	int ret;
@@ -2363,6 +2412,8 @@ static int lxc_is_ip_neigh_proxy_enabled(const char *ifname, int family)
 
 	return lxc_read_file_expect(path, buf, 1, "1");
 }
+
+#endif /* IN_LIBLXC */
 
 int lxc_neigh_proxy_on(const char *name, int family)
 {
@@ -2423,7 +2474,7 @@ static int ip_addr_add(int family, int ifindex, void *addr, void *bcast,
 		       void *acast, int prefix)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int addrlen, err;
 	struct ifaddrmsg *ifa;
@@ -2543,7 +2594,7 @@ static int ifa_get_local_ip(int family, struct nlmsghdr *msg, void **res)
 static int ip_addr_get(int family, int ifindex, void **res)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int answer_len, err;
 	struct ifaddrmsg *ifa;
@@ -2661,7 +2712,7 @@ int lxc_ipv4_addr_get(int ifindex, struct in_addr **res)
 static int ip_gateway_add(int family, int ifindex, void *gw)
 {
 	call_cleaner(nlmsg_free) struct nlmsg *answer = NULL, *nlmsg = NULL;
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int addrlen, err;
 	struct rtmsg *rt;
@@ -2886,6 +2937,8 @@ int lxc_find_gateway_addresses(struct lxc_handler *handler)
 
 	return 0;
 }
+
+#ifdef IN_LIBLXC
 
 #define LXC_USERNIC_PATH LIBEXECDIR "/lxc/lxc-user-nic"
 static int lxc_create_network_unpriv_exec(const char *lxcpath,
@@ -3416,6 +3469,8 @@ static int lxc_create_network_priv(struct lxc_handler *handler)
 	return 0;
 }
 
+#endif /* IN_LIBLXC */
+
 /*
  * LXC moves network devices into the target namespace based on their created
  * name. The created name can either be randomly generated for e.g. veth
@@ -3464,7 +3519,7 @@ static int lxc_create_network_priv(struct lxc_handler *handler)
  * based on those random devices names to the target name.
  *
  * Note that the transient name is based on the type of network device as
- * specified in the LXC config. However, that doesn't mean it's correct. LXD
+ * specified in the LXC config. However, that doesn't mean it's correct. Incus
  * passes veth devices and a range of other network devices (e.g. Infiniband
  * VFs etc.) via LXC_NET_PHYS even though they're not really "physical" in the
  * sense we like to think about it so you might see a veth device being
@@ -3490,7 +3545,7 @@ static int create_transient_name(struct lxc_netdev *netdev)
 
 static int netdev_requires_move(const struct lxc_netdev *netdev)
 {
-	if (IN_SET(netdev->type, LXC_NET_EMPTY, LXC_NET_NONE))
+	if (netdev->type == LXC_NET_EMPTY || netdev->type == LXC_NET_NONE)
 		return false;
 
 	/*
@@ -3552,6 +3607,8 @@ static int network_requires_advanced_setup(int type)
 
 	return true;
 }
+
+#ifdef IN_LIBLXC
 
 static int lxc_create_network_unpriv(struct lxc_handler *handler)
 {
@@ -3649,7 +3706,7 @@ static bool lxc_delete_network_priv(struct lxc_handler *handler)
 			goto clear_ifindices;
 
 		/* Explicitly delete host veth device to prevent lingering
-		 * devices. We had issues in LXD around this.
+		 * devices. We had issues in Incus around this.
 		 */
 		if (!is_empty_string(netdev->priv.veth_attr.pair))
 			hostveth = netdev->priv.veth_attr.pair;
@@ -3695,6 +3752,8 @@ clear_ifindices:
 	return true;
 }
 
+#endif /* IN_LIBLXC */
+
 int lxc_requests_empty_network(struct lxc_handler *handler)
 {
 	struct list_head *netdevs = &handler->conf->netdevs;
@@ -3732,7 +3791,7 @@ int lxc_restore_phys_nics_to_netns(struct lxc_handler *handler)
 	 * If we weren't asked to clone a new network namespace, there's
 	 * nothing to restore.
 	 */
-	if (!(handler->ns_clone_flags & CLONE_NEWNET))
+	if (!container_uses_namespace(handler, CLONE_NEWNET))
 		return 0;
 
 	/* We need CAP_NET_ADMIN in the parent namespace in order to setns() to
@@ -4138,6 +4197,8 @@ int lxc_network_recv_name_and_ifindex_from_child(struct lxc_handler *handler)
 	return 0;
 }
 
+#ifdef IN_LIBLXC
+
 void lxc_delete_network(struct lxc_handler *handler)
 {
 	bool bret;
@@ -4159,13 +4220,15 @@ void lxc_delete_network(struct lxc_handler *handler)
 		DEBUG("Deleted network devices");
 }
 
+#endif /* IN_LIBLXC */
+
 int lxc_netns_set_nsid(int fd)
 {
 	int ret;
 	char buf[NLMSG_ALIGN(sizeof(struct nlmsghdr)) +
 		 NLMSG_ALIGN(sizeof(struct rtgenmsg)) +
 		 NLMSG_ALIGN(1024)];
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	struct nlmsghdr *hdr;
 	struct rtgenmsg *msg;
@@ -4234,7 +4297,7 @@ static inline __s32 rta_getattr_s32(const struct rtattr *rta)
 
 int lxc_netns_get_nsid(int fd)
 {
-	struct nl_handler nlh;
+	struct nl_handler nlh = NL_HANDLER_INIT;
 	call_cleaner(netlink_close) struct nl_handler *nlh_ptr = &nlh;
 	int ret;
 	ssize_t len;
@@ -4288,6 +4351,8 @@ int lxc_netns_get_nsid(int fd)
 	return -1;
 }
 
+#ifdef IN_LIBLXC
+
 int lxc_create_network(struct lxc_handler *handler)
 {
 	int ret;
@@ -4302,3 +4367,5 @@ int lxc_create_network(struct lxc_handler *handler)
 
 	return lxc_create_network_unpriv(handler);
 }
+
+#endif /* IN_LIBLXC */

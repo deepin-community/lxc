@@ -6,17 +6,16 @@ Depends: busybox-static,
          file,
          gnupg,
          iptables,
-         lsb-release,
          rsync,
          uidmap,
          xz-utils,
          @
 Restrictions: needs-root allow-stderr isolation-machine
 
-Tests: unprivileged-containers
-Depends: distro-info, uidmap, wget, @
-Restrictions: allow-stderr, isolation-machine, needs-internet
-
 Tests: basics-create-destroy
 Depends: @, busybox-static
 Restrictions: allow-stderr, needs-root, superficial
+
+Tests: no-devel
+Depends: lxc-dev
+Restrictions: allow-stderr

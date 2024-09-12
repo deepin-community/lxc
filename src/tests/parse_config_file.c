@@ -1,21 +1,11 @@
 /* liblxcapi
  *
- * Copyright © 2017 Christian Brauner <christian.brauner@ubuntu.com>.
- * Copyright © 2017 Canonical Ltd.
+ * SPDX-License-Identifier: GPL-2.0-only
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+
+#include "config.h"
+
 #include <lxc/lxccontainer.h>
 
 #include <errno.h>
@@ -30,7 +20,7 @@
 
 #include "conf.h"
 #include "confile_utils.h"
-#include "lxc/state.h"
+#include "state.h"
 #include "lxctest.h"
 #include "utils.h"
 
@@ -573,7 +563,14 @@ int main(int argc, char *argv[])
 		goto non_test_error;
 	}
 
-	if (set_get_compare_clear_save_load(c, "lxc.seccomp.profile", "/some/seccomp/file", tmpf, true) < 0) {
+	ret = set_get_compare_clear_save_load(c, "lxc.seccomp.profile", "/some/seccomp/file", tmpf, true);
+
+#if HAVE_SECCOMP
+	if (ret < 0)
+#else
+	if (ret == 0)
+#endif
+	{
 		lxc_error("%s\n", "lxc.seccomp.profile");
 		goto non_test_error;
 	}
@@ -794,6 +791,21 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	if (set_get_compare_clear_save_load_network(c, "lxc.net.0.veth.vlan.id", "none", tmpf, false, "veth")) {
+		lxc_error("%s\n", "lxc.net.0.veth.vlan.id");
+		return -1;
+	}
+
+	if (set_get_compare_clear_save_load_network(c, "lxc.net.0.veth.vlan.id", "2", tmpf, true, "veth")) {
+		lxc_error("%s\n", "lxc.net.0.veth.vlan.id");
+		return -1;
+	}
+
+	if (set_get_compare_clear_save_load_network(c, "lxc.net.0.veth.vlan.tagged.id", "2", tmpf, true, "veth")) {
+		lxc_error("%s\n", "lxc.net.0.veth.vlan.tagged.id");
+		return -1;
+	}
+
 	if (set_get_compare_clear_save_load(c, "lxc.net.0.script.up", "/some/up/path", tmpf, true)) {
 		lxc_error("%s\n", "lxc.net.0.script.up");
 		goto non_test_error;
@@ -859,7 +871,7 @@ int main(int argc, char *argv[])
 		goto non_test_error;
 	}
 
-	if (set_get_compare_clear_save_load(c, "lxc.cgroup.dir", "lxd", tmpf, true)) {
+	if (set_get_compare_clear_save_load(c, "lxc.cgroup.dir", "incus", tmpf, true)) {
 		lxc_error("%s\n", "lxc.cgroup.dir");
 		goto non_test_error;
 	}
@@ -881,12 +893,12 @@ int main(int argc, char *argv[])
 	}
 
 	if (c->set_config_item(c, "lxc.hook.version", "2")) {
-		lxc_error("%s\n", "Managed to set to set invalid config item \"lxc.hook.version\" to \"2\"");
+		lxc_error("%s\n", "Managed to set invalid config item \"lxc.hook.version\" to \"2\"");
 		goto non_test_error;
 	}
 
 	if (!c->set_config_item(c, "lxc.monitor.signal.pdeath", "SIGKILL")) {
-		lxc_error("%s\n", "Failed to set to set invalid config item \"lxc.monitor.signal.pdeath\" to \"SIGKILL\"");
+		lxc_error("%s\n", "Failed to set invalid config item \"lxc.monitor.signal.pdeath\" to \"SIGKILL\"");
 		goto non_test_error;
 	}
 
@@ -896,22 +908,47 @@ int main(int argc, char *argv[])
 	}
 
 	if (c->set_config_item(c, "lxc.notaconfigkey", "invalid")) {
-		lxc_error("%s\n", "Managed to set to set invalid config item \"lxc.notaconfigkey\" to \"invalid\"");
+		lxc_error("%s\n", "Managed to set invalid config item \"lxc.notaconfigkey\" to \"invalid\"");
 		return -1;
 	}
 
 	if (c->set_config_item(c, "lxc.log.file=", "./")) {
-		lxc_error("%s\n", "Managed to set to set invalid config item \"lxc.log.file\" to \"./\"");
+		lxc_error("%s\n", "Managed to set invalid config item \"lxc.log.file\" to \"./\"");
 		return -1;
 	}
 
 	if (c->set_config_item(c, "lxc.hook.versionasdfsadfsadf", "1")) {
-		lxc_error("%s\n", "Managed to set to set invalid config item \"lxc.hook.versionasdfsadfsadf\" to \"2\"");
+		lxc_error("%s\n", "Managed to set invalid config item \"lxc.hook.versionasdfsadfsadf\" to \"2\"");
 		goto non_test_error;
 	}
 
 	if (set_get_compare_clear_save_load(c, "lxc.sched.core", "1", tmpf, true) < 0) {
 		lxc_error("%s\n", "lxc.sched.core");
+		goto non_test_error;
+	}
+
+	if (set_get_compare_clear_save_load(c, "lxc.time.offset.boot", "-1234s", tmpf, true) < 0) {
+		lxc_error("%s\n", "lxc.time.offset.boot");
+		goto non_test_error;
+	}
+
+	if (!c->set_config_item(c, "lxc.time.offset.boot", "1000000000000000us")) {
+		lxc_error("%s\n", "Failed to set a valid value (1000000000000000us) to config item \"lxc.time.offset.boot\"");
+		goto non_test_error;
+	}
+
+	if (!c->set_config_item(c, "lxc.time.offset.boot", "-1000000000000000us")) {
+		lxc_error("%s\n", "Failed to set a valid (-1000000000000000us) value to config item \"lxc.time.offset.boot\"");
+		goto non_test_error;
+	}
+
+	if (c->set_config_item(c, "lxc.time.offset.boot", "10000000000000000us")) {
+		lxc_error("%s\n", "Managed to set overflowed value to config item \"lxc.time.offset.boot\"");
+		goto non_test_error;
+	}
+
+	if (set_get_compare_clear_save_load(c, "lxc.time.offset.monotonic", "4321s", tmpf, true) < 0) {
+		lxc_error("%s\n", "lxc.time.offset.monotonic");
 		goto non_test_error;
 	}
 

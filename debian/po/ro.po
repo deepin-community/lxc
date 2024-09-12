@@ -1,0 +1,60 @@
+# Mesajele în limba română pentru pachetul lxc.
+# Romanian translation of lxc.
+# This file is distributed under the same license as the lxc package.
+#
+# Copyright © 2023 Remus-Gabriel Chelu <remusgabriel.chelu@disroot.org>
+#
+# Cronologia traducerii fișierului „lxc”:
+# Traducerea inițială, făcută de R-GC, pentru versiunea lxc 1 5.0.2-1(2018-11-29).
+# Actualizare a traducerii pentru versiunea Y, făcută de X, Y(anul).
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: lxc 1 5.0.2-1\n"
+"Report-Msgid-Bugs-To: lxc@packages.debian.org\n"
+"POT-Creation-Date: 2018-11-29 22:19+0100\n"
+"PO-Revision-Date: 2023-02-23 10:40+0100\n"
+"Last-Translator: Remus-Gabriel Chelu <remusgabriel.chelu@disroot.org>\n"
+"Language-Team: Romanian <debian-l10n-romanian@lists.debian.org>\n"
+"Language: ro\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n==1 ? 0 : n==0 || (n!=1 && n%100>=1 && "
+"n%100<=19) ? 1 : 2);\n"
+"X-Bugs: Report translation errors to the Language-Team address.\n"
+"X-Generator: Poedit 3.2.2\n"
+
+#. Type: boolean
+#. Description
+#: ../templates:1001
+msgid "Auto update lxc2 configuration format to lxc3?"
+msgstr "Doriți să actualizați automat formatul de configurare lxc2 la lxc3?"
+
+#. Type: boolean
+#. Description
+#: ../templates:1001
+msgid ""
+"LXC 3 comes with many changes for containers' configuration files. It also "
+"comes with a binary `/usr/bin/lxc-update-config` that allows one to update his "
+"configuration."
+msgstr ""
+"LXC 3 vine cu multe modificări pentru fișierele de configurare ale "
+"containerelor. De asemenea, vine cu un binar «/usr/bin/lxc-update-config», care "
+"permite oricui să-și actualizeze configurația."
+
+#. Type: boolean
+#. Description
+#: ../templates:1001
+msgid "This job can be done either automatically now or manually later."
+msgstr "Puteți actualiza acum formatul automat, sau mai târziu manual."
+
+#. Type: boolean
+#. Description
+#: ../templates:1001
+msgid ""
+"Unpriviledged containers configurations will have to be updated manually either "
+"way via the `/usr/bin/lxc-update-config` command."
+msgstr ""
+"În orice caz, configurațiile containerelor fără privilegii vor trebui să fie "
+"actualizate manual prin comanda «/usr/bin/lxc-update-config»."

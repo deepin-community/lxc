@@ -8,11 +8,15 @@ set -eu
 
 uidrange=$(awk -F : "{if (\$1 == \"${USER}\") {print(\$2, \$3)}}" /etc/subuid)
 gidrange=$(awk -F : "{if (\$1 == \"${USER}\") {print(\$2, \$3)}}" /etc/subgid)
+distro=$(distro-info -f --stable | awk '{ print tolower($1) }')
 stable=$(distro-info --stable)
 
 set -x
 
 mkdir -p ~/.config/lxc
+
+# see https://github.com/lxc/lxc/blob/899478b7159464e0fa6b88d85790f59bb852a7f1/src/lxc/start.c#L99
+chmod +x ~
 
 # no network as this would require some setup as root
 tee ~/.config/lxc/default.conf <<CONFIG
@@ -25,7 +29,7 @@ lxc.mount.auto = proc:mixed sys:ro cgroup:mixed
 lxc.apparmor.profile = unconfined
 CONFIG
 
-lxc-create -t download -n mycontainer -- -d debian -r ${stable} -a amd64
+lxc-create -t download -n mycontainer -- -d ${distro} -r ${stable} -a amd64
 
 systemd-run --scope --quiet --user --property=Delegate=yes \
   lxc-start -n mycontainer

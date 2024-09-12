@@ -119,6 +119,15 @@ This adds a new API function `init_pidfd()` which allows one to retrieve a pidfd
 
 When running on kernels that support pidfds LXC will rely on them for most operations. This makes interacting with containers not just more reliable it also makes it significantly safer and eliminates various races inherent to PID-based kernel APIs. LXC will require that the running kernel at least support `pidfd_send_signal()`, `CLONE_PIDFD`, `P_PIDFD`, and pidfd polling support. Any kernel starting with `Linux 5.4` should have full support for pidfds.
 
+## cgroup\_advanced\_isolation
+
+Privileged containers will usually be able to override the cgroup limits given to them. This introduces three new configuration keys `lxc.cgroup.dir.monitor`, `lxc.cgroup.dir.container`, and `lxc.cgroup.dir.container.inner`. The `lxc.cgroup.dir.monitor` and `lxc.cgroup.dir.container` keys can be used to set to place the `monitor` and the `container` into different cgroups. The `lxc.cgroup.dir.container.inner` key can be set to a cgroup that is concatenated with `lxc.cgroup.dir.container`. When `lxc.cgroup.dir.container.inner` is set the container will be placed into the `lxc.cgroup.dir.container.inner` cgroup but the limits will be set in the `lxc.cgroup.dir.container` cgroup. This way privileged containers cannot escape their cgroup limits.
+
+
+## time\_namespace
+
+This adds time namespace support to LXC.
+
 ## seccomp\_allow\_deny\_syntax
 
 This adds the ability to use "denylist" and "allowlist" in seccomp v2 policies.
@@ -144,3 +153,10 @@ Whether this LXC instance can handle idmapped mounts for the rootfs.
 
 Whether this LXC instance can handle idmapped mounts for lxc.mount.entry
 entries.
+
+## cgroup2\_auto_mounting
+
+This adds the new options `cgroup2`, `cgroup2:ro`, `cgroup2:force`,
+`cgroup2:ro:force` for the `lxc.mount.auto` configuration key. For example, if
+a user specifies `cgroup2:force` LXC will pre-mount a pure `cgroup2` layout for
+the container even if the host is running with a hybrid layout.

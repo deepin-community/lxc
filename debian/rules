@@ -2,29 +2,35 @@
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
-DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+export systemdsystemunitdir = $(shell pkg-config --variable=systemdsystemunitdir systemd | sed s,^/,,)
+
+include /usr/share/dpkg/default.mk
 
 %:
-	dh ${@} --with autoreconf
+	dh ${@} --buildsystem=meson
 
 override_dh_auto_configure:
+ifeq ($(DEB_VENDOR),Ubuntu)
+	# Apply Ubuntu-specific patches
+	patch -p1 < debian/patches.ubuntu/1000-ubuntu-apparmor-userns.patch
+endif
 	dh_auto_configure -- \
-		--disable-rpath \
-		--enable-doc \
-		--enable-api-docs \
-		--enable-apparmor \
-		--enable-selinux \
-		--enable-capabilities \
-		--enable-examples \
-		--enable-pam \
-		--with-pamdir=/usr/lib/${DEB_HOST_MULTIARCH}/ \
-		--disable-mutex-debugging \
-		--enable-bash \
-		--enable-tests \
-		--enable-configpath-log \
-		--with-distro=debian \
-		--with-init-script=sysvinit,systemd \
-		--with-systemdsystemunitdir=/lib/systemd/system
+		-Dman=true \
+		-Dapparmor=true \
+		-Dselinux=true \
+		-Dcapabilities=true \
+		-Dexamples=true \
+		-Dpam-cgroup=true \
+		-Dtests=true \
+		-Dinit-script=sysvinit,systemd
+
+override_dh_clean:
+	dh_clean
+
+override_dh_auto_build:
+	dh_auto_build
+	# See https://github.com/lxc/lxc/issues/4156
+	cd doc/api/ && doxygen
 
 override_dh_auto_install:
 	dh_auto_install
@@ -37,11 +43,6 @@ override_dh_auto_install:
 	find debian/tmp/ -type f -name \*.la -delete
 	find debian/tmp/ -type f -name \*.a -delete
 
-	# lxc
-	grep complete debian/tmp/usr/share/bash-completion/completions/lxc | sed "s/.* //g" | while read cmd; do \
-		dh_link -p lxc usr/share/bash-completion/completions/lxc usr/share/bash-completion/completions/$${cmd}; \
-	done
-
 	# move the tests
 	mkdir -p debian/lxc-tests/usr/bin
 	mv debian/tmp/usr/bin/lxc-test-* debian/lxc-tests/usr/bin/
@@ -50,6 +51,11 @@ override_dh_auto_install:
 	mkdir -p debian/tmp/etc/sysctl.d
 	cp debian/lxc.sysctl debian/tmp/etc/sysctl.d/30-lxc-inotify.conf
 
+	# fix the sysvinit script name
+	mv $(CURDIR)/debian/tmp/etc/init.d/lxc-containers \
+		$(CURDIR)/debian/tmp/etc/init.d/lxc
+
+	dh_apparmor -p liblxc-common --profile-name=usr.bin.lxc-copy
 	dh_apparmor -p liblxc-common --profile-name=usr.bin.lxc-start
 
 override_dh_compress:

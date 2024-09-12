@@ -38,6 +38,7 @@
 #include "confile_utils.h"
 #include "error.h"
 #include "file_utils.h"
+#include "idmap_utils.h"
 #include "list.h"
 #include "log.h"
 #include "lsm/lsm.h"
@@ -150,9 +151,6 @@ static int lxc_try_preserve_namespace(struct lxc_handler *handler,
 static bool lxc_try_preserve_namespaces(struct lxc_handler *handler,
 					int ns_clone_flags)
 {
-	for (lxc_namespace_t ns_idx = 0; ns_idx < LXC_NS_MAX; ns_idx++)
-		handler->nsfd[ns_idx] = -EBADF;
-
 	for (lxc_namespace_t ns_idx = 0; ns_idx < LXC_NS_MAX; ns_idx++) {
 		int ret;
 		const char *ns = ns_info[ns_idx].proc_name;
@@ -629,7 +627,8 @@ int lxc_poll(const char *name, struct lxc_handler *handler)
 	TRACE("Mainloop is ready");
 
 	ret = lxc_mainloop(&descr, -1);
-	close_prot_errno_disarm(descr.epfd);
+	if (descr.type == LXC_MAINLOOP_EPOLL)
+		close_prot_errno_disarm(descr.epfd);
 	if (ret < 0 || !handler->init_died)
 		goto out_mainloop_console;
 
@@ -1095,7 +1094,7 @@ static int do_start(void *data)
 		goto out_warn_father;
 
 	/* Unshare CLONE_NEWNET after CLONE_NEWUSER. See
-	 * https://github.com/lxc/lxd/issues/1978.
+	 * https://github.com/canonical/lxd/issues/1978.
 	 */
 	if (handler->ns_unshare_flags & CLONE_NEWNET) {
 		ret = unshare(CLONE_NEWNET);
@@ -1328,6 +1327,12 @@ static int do_start(void *data)
 	setsid();
 
 	if (handler->conf->init_cwd) {
+		struct stat st;
+		if (stat(handler->conf->init_cwd, &st) < 0 && lxc_mkdir_p(handler->conf->init_cwd, 0755) < 0) {
+			SYSERROR("Try to create directory \"%s\" as workdir failed", handler->conf->init_cwd);
+			goto out_warn_father;
+		}
+
 		ret = chdir(handler->conf->init_cwd);
 		if (ret < 0) {
 			SYSERROR("Could not change directory to \"%s\"",
@@ -1396,7 +1401,7 @@ static int do_start(void *data)
 	 * we switched to root in the new user namespace further above. Only
 	 * drop groups if we can, so ensure that we have necessary privilege.
 	 */
-	if (list_empty(&handler->conf->id_map)) {
+	if (!container_uses_namespace(handler, CLONE_NEWUSER)) {
 		#if HAVE_LIBCAP
 		if (lxc_proc_cap_is_set(CAP_SETGID, CAP_EFFECTIVE))
 		#endif
@@ -1561,25 +1566,49 @@ static int core_scheduling(struct lxc_handler *handler)
 	if (!conf->sched_core)
 		return log_trace(0, "No new core scheduling domain requested");
 
-	if (!(handler->ns_clone_flags & CLONE_NEWPID))
+	if (!container_uses_namespace(handler, CLONE_NEWPID))
 		return syserror_set(-EINVAL, "Core scheduling currently requires a separate pid namespace");
 
 	ret = core_scheduling_cookie_create_threadgroup(handler->pid);
 	if (ret < 0) {
+		if (ret == -ENODEV) {
+			INFO("The kernel doesn't support or doesn't use simultaneous multithreading (SMT)");
+			conf->sched_core = false;
+			return 0;
+		}
 		if (ret == -EINVAL)
 			return syserror("The kernel does not support core scheduling");
 
 		return syserror("Failed to create new core scheduling domain");
 	}
 
-	conf->sched_core_cookie = core_scheduling_cookie_get(handler->pid);
-	if (!core_scheduling_cookie_valid(conf->sched_core_cookie))
+	ret = core_scheduling_cookie_get(handler->pid, &conf->sched_core_cookie);
+	if (ret || !core_scheduling_cookie_valid(conf->sched_core_cookie))
 		return syserror("Failed to retrieve core scheduling domain cookie");
 
 	TRACE("Created new core scheduling domain with cookie %llu",
 	      (llu)conf->sched_core_cookie);
 
 	return 0;
+}
+
+static bool inherits_namespaces(const struct lxc_handler *handler)
+{
+	struct lxc_conf *conf = handler->conf;
+
+	for (lxc_namespace_t i = 0; i < LXC_NS_MAX; i++) {
+		if (conf->ns_share[i])
+			return true;
+	}
+
+	return false;
+}
+
+static inline void resolve_cgroup_clone_flags(struct lxc_handler *handler)
+{
+	handler->clone_flags		&= ~(CLONE_INTO_CGROUP | CLONE_NEWCGROUP);
+	handler->ns_on_clone_flags	&= ~(CLONE_INTO_CGROUP | CLONE_NEWCGROUP);
+	handler->ns_unshare_flags	|= CLONE_NEWCGROUP;
 }
 
 /* lxc_spawn() performs crucial setup tasks and clone()s the new process which
@@ -1597,24 +1626,11 @@ static int lxc_spawn(struct lxc_handler *handler)
 	bool wants_to_map_ids;
 	struct list_head *id_map;
 	const char *name = handler->name;
-	const char *lxcpath = handler->lxcpath;
-	bool share_ns = false;
 	struct lxc_conf *conf = handler->conf;
 	struct cgroup_ops *cgroup_ops = handler->cgroup_ops;
 
 	id_map = &conf->id_map;
 	wants_to_map_ids = !list_empty(id_map);
-
-	for (i = 0; i < LXC_NS_MAX; i++) {
-		if (!conf->ns_share[i])
-			continue;
-
-		handler->nsfd[i] = lxc_inherit_namespace(conf->ns_share[i], lxcpath, ns_info[i].proc_name);
-		if (handler->nsfd[i] < 0)
-			return -1;
-
-		share_ns = true;
-	}
 
 	if (!lxc_sync_init(handler))
 		return -1;
@@ -1626,11 +1642,7 @@ static int lxc_spawn(struct lxc_handler *handler)
 	data_sock0 = handler->data_sock[0];
 	data_sock1 = handler->data_sock[1];
 
-	ret = resolve_clone_flags(handler);
-	if (ret < 0)
-		goto out_sync_fini;
-
-	if (handler->ns_clone_flags & CLONE_NEWNET) {
+	if (container_uses_namespace(handler, CLONE_NEWNET)) {
 		ret = lxc_find_gateway_addresses(handler);
 		if (ret) {
 			ERROR("Failed to find gateway addresses");
@@ -1644,9 +1656,10 @@ static int lxc_spawn(struct lxc_handler *handler)
 	}
 
 	/* Create a process in a new set of namespaces. */
-	if (share_ns) {
+	if (inherits_namespaces(handler)) {
 		pid_t attacher_pid;
 
+		resolve_cgroup_clone_flags(handler);
 		attacher_pid = lxc_clone(do_share_ns, handler,
 					 CLONE_VFORK | CLONE_VM | CLONE_FILES, NULL);
 		if (attacher_pid < 0) {
@@ -1667,13 +1680,13 @@ static int lxc_spawn(struct lxc_handler *handler)
 	} else {
 		int cgroup_fd = -EBADF;
 
-		struct lxc_clone_args clone_args = {
+		struct clone_args clone_args = {
 			.flags = handler->clone_flags,
 			.pidfd = ptr_to_u64(&handler->pidfd),
 			.exit_signal = SIGCHLD,
 		};
 
-		if (handler->ns_clone_flags & CLONE_NEWCGROUP) {
+		if (container_uses_namespace(handler, CLONE_NEWCGROUP)) {
 			cgroup_fd = cgroup_unified_fd(cgroup_ops);
 			if (cgroup_fd >= 0) {
 				handler->clone_flags	|= CLONE_INTO_CGROUP;
@@ -1688,11 +1701,8 @@ static int lxc_spawn(struct lxc_handler *handler)
 			SYSTRACE("Failed to spawn container directly into target cgroup");
 
 			/* Kernel might simply be too old for CLONE_INTO_CGROUP. */
-			handler->clone_flags		&= ~(CLONE_INTO_CGROUP | CLONE_NEWCGROUP);
-			handler->ns_on_clone_flags	&= ~CLONE_NEWCGROUP;
-			handler->ns_unshare_flags	|= CLONE_NEWCGROUP;
-
-			clone_args.flags		= handler->clone_flags;
+			resolve_cgroup_clone_flags(handler);
+			clone_args.flags = handler->clone_flags;
 
 			handler->pid = lxc_clone3(&clone_args, CLONE_ARGS_SIZE_VER0);
 		} else if (cgroup_fd >= 0) {
@@ -1831,7 +1841,7 @@ static int lxc_spawn(struct lxc_handler *handler)
 		TRACE("Allocated new network namespace id");
 
 	/* Create the network configuration. */
-	if (handler->ns_clone_flags & CLONE_NEWNET) {
+	if (container_uses_namespace(handler, CLONE_NEWNET)) {
 		ret = lxc_create_network(handler);
 		if (ret < 0) {
 			ERROR("Failed to create the network");
@@ -1861,7 +1871,7 @@ static int lxc_spawn(struct lxc_handler *handler)
 		goto out_delete_net;
 	}
 
-	if (handler->ns_clone_flags & CLONE_NEWNET) {
+	if (container_uses_namespace(handler, CLONE_NEWNET)) {
 		ret = lxc_network_send_to_child(handler);
 		if (ret < 0) {
 			SYSERROR("Failed to send veth names to child");
@@ -1977,7 +1987,7 @@ static int lxc_spawn(struct lxc_handler *handler)
 	return 0;
 
 out_delete_net:
-	if (handler->ns_clone_flags & CLONE_NEWNET)
+	if (container_uses_namespace(handler, CLONE_NEWNET))
 		lxc_delete_network(handler);
 
 out_abort:
@@ -1987,6 +1997,28 @@ out_sync_fini:
 	lxc_sync_fini(handler);
 
 	return -1;
+}
+
+static int lxc_inherit_namespaces(struct lxc_handler *handler)
+{
+	const char *lxcpath = handler->lxcpath;
+	struct lxc_conf *conf = handler->conf;
+
+	for (lxc_namespace_t i = 0; i < LXC_NS_MAX; i++) {
+		if (!conf->ns_share[i])
+			continue;
+
+		handler->nsfd[i] = lxc_inherit_namespace(conf->ns_share[i],
+							lxcpath,
+							ns_info[i].proc_name);
+		if (handler->nsfd[i] < 0)
+			return -1;
+
+		TRACE("Recording inherited %s namespace with fd %d",
+		      ns_info[i].proc_name, handler->nsfd[i]);
+	}
+
+	return 0;
 }
 
 int __lxc_start(struct lxc_handler *handler, struct lxc_operations *ops,
@@ -2027,6 +2059,20 @@ int __lxc_start(struct lxc_handler *handler, struct lxc_operations *ops,
 
 	if (!cgroup_ops->monitor_enter(cgroup_ops, handler)) {
 		ERROR("Failed to enter monitor cgroup");
+		ret = -1;
+		goto out_abort;
+	}
+
+	ret = resolve_clone_flags(handler);
+	if (ret < 0) {
+		ERROR("Failed to resolve clone flags");
+		ret = -1;
+		goto out_abort;
+	}
+
+	ret = lxc_inherit_namespaces(handler);
+	if (ret) {
+		SYSERROR("Failed to record inherited namespaces");
 		ret = -1;
 		goto out_abort;
 	}
@@ -2092,19 +2138,20 @@ int __lxc_start(struct lxc_handler *handler, struct lxc_operations *ops,
 	 * In any case, treat it as a 'halt'.
 	 */
 	if (WIFSIGNALED(status)) {
-		switch(WTERMSIG(status)) {
+		int signal_nr = WTERMSIG(status);
+		switch(signal_nr) {
 		case SIGINT: /* halt */
-			DEBUG("Container \"%s\" is halting", name);
+			DEBUG("%s(%d) - Container \"%s\" is halting", signal_name(signal_nr), signal_nr, name);
 			break;
 		case SIGHUP: /* reboot */
-			DEBUG("Container \"%s\" is rebooting", name);
+			DEBUG("%s(%d) - Container \"%s\" is rebooting", signal_name(signal_nr), signal_nr, name);
 			handler->conf->reboot = REBOOT_REQ;
 			break;
 		case SIGSYS: /* seccomp */
-			DEBUG("Container \"%s\" violated its seccomp policy", name);
+			DEBUG("%s(%d) - Container \"%s\" violated its seccomp policy", signal_name(signal_nr), signal_nr, name);
 			break;
 		default:
-			DEBUG("Unknown exit status for container \"%s\" init %d", name, WTERMSIG(status));
+			DEBUG("%s(%d) - Container \"%s\" init exited", signal_name(signal_nr), signal_nr, name);
 			break;
 		}
 	}

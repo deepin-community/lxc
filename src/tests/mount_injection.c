@@ -1,28 +1,16 @@
 /* mount_injection
  *
- * Copyright © 2018 Elizaveta Tretiakova <elizabet.tretyakova@gmail.com>.
+ * SPDX-License-Identifier: GPL-2.0-only
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#include "config.h"
 
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <lxc/lxccontainer.h>
-#include <lxc/list.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -31,6 +19,7 @@
 
 #include "config.h"
 #include "lxctest.h"
+#include "list.h"
 #include "utils.h"
 
 #define NAME "mount_injection_test-"
@@ -390,7 +379,7 @@ static bool lxc_setup_shmount(const char *shmount_path)
 {
 	int ret;
 
-	ret = mkdir_p(shmount_path, 0711);
+	ret = lxc_mkdir_p(shmount_path, 0711);
 	if (ret < 0 && errno != EEXIST) {
 		fprintf(stderr, "Failed to create directory \"%s\"\n", shmount_path);
 		return false;

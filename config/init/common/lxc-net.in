@@ -20,10 +20,11 @@ LXC_DHCP_PING="true"
 LXC_DOMAIN=""
 LXC_USE_NFT="true"
 
-LXC_IPV6_ADDR=""
-LXC_IPV6_MASK=""
-LXC_IPV6_NETWORK=""
-LXC_IPV6_NAT="false"
+# IPv6 connectivity
+LXC_IPV6_ADDR="fc11:4514:1919:810::1"
+LXC_IPV6_MASK="64"
+LXC_IPV6_NETWORK="fc11:4514:1919:810::/64"
+LXC_IPV6_NAT="true"
 
 [ ! -f $distrosysconfdir/lxc ] || . $distrosysconfdir/lxc
 
@@ -31,7 +32,7 @@ use_nft() {
     [ -n "$NFT" ] && nft list ruleset > /dev/null 2>&1 && [ "$LXC_USE_NFT" = "true" ]
 }
 
-NFT="$(which nft)"
+NFT="$(command -v nft)"
 if ! use_nft; then
     use_iptables_lock="-w"
     iptables -w -L -n > /dev/null 2>&1 || use_iptables_lock=""
@@ -52,7 +53,7 @@ _ifdown() {
 }
 
 _ifup() {
-    MASK=`_netmask2cidr ${LXC_NETMASK}`
+    MASK=$(_netmask2cidr ${LXC_NETMASK})
     CIDR_ADDR="${LXC_ADDR}/${MASK}"
     ip addr add ${CIDR_ADDR} broadcast + dev ${LXC_BRIDGE}
     ip link set dev ${LXC_BRIDGE} address $LXC_BRIDGE_MAC
@@ -92,7 +93,7 @@ start_nftables() {
 add table ip6 lxc;
 flush table ip6 lxc;
 add chain ip6 lxc postrouting { type nat hook postrouting priority 100; };
-add rule ip6 lxc postrouting ip saddr ${LXC_IPV6_NETWORK} ip daddr != ${LXC_IPV6_NETWORK} counter masquerade;
+add rule ip6 lxc postrouting ip6 saddr ${LXC_IPV6_NETWORK} ip6 daddr != ${LXC_IPV6_NETWORK} counter masquerade;
 "
     fi
     NFT_RULESET="${NFT_RULESET};
@@ -144,7 +145,7 @@ start() {
     # can't write its pid into, so we restorecon it (to var_run_t)
     if [ ! -d "${varrun}" ]; then
         mkdir -p "${varrun}"
-        if which restorecon >/dev/null 2>&1; then
+        if command -v restorecon >/dev/null 2>&1; then
             restorecon "${varrun}"
         fi
     fi
@@ -179,12 +180,17 @@ start() {
         LXC_DHCP_PING_ARG="--no-ping"
     fi
 
+    DNSMASQ_MISC_DIR="$varlib/misc"
+    if [ ! -d "$DNSMASQ_MISC_DIR" ]; then
+        mkdir -p "$DNSMASQ_MISC_DIR"
+    fi
+
     dnsmasq $LXC_DHCP_CONFILE_ARG $LXC_DOMAIN_ARG $LXC_DHCP_PING_ARG -u ${DNSMASQ_USER} \
             --strict-order --bind-interfaces --pid-file="${varrun}"/dnsmasq.pid \
             --listen-address ${LXC_ADDR} --dhcp-range ${LXC_DHCP_RANGE} \
             --dhcp-lease-max=${LXC_DHCP_MAX} --dhcp-no-override \
             --except-interface=lo --interface=${LXC_BRIDGE} \
-            --dhcp-leasefile="${varlib}"/misc/dnsmasq.${LXC_BRIDGE}.leases \
+            --dhcp-leasefile="${DNSMASQ_MISC_DIR}"/dnsmasq.${LXC_BRIDGE}.leases \
             --dhcp-authoritative $LXC_IPV6_ARG || cleanup
 
     touch "${varrun}"/network_up
@@ -234,7 +240,7 @@ stop() {
             stop_iptables
         fi
 
-        pid=`cat "${varrun}"/dnsmasq.pid 2>/dev/null` && kill -9 $pid
+        pid=$(cat "${varrun}"/dnsmasq.pid 2>/dev/null) && kill -9 $pid
         rm -f "${varrun}"/dnsmasq.pid
         # if $LXC_BRIDGE has attached interfaces, don't destroy the bridge
         ls /sys/class/net/${LXC_BRIDGE}/brif/* > /dev/null 2>&1 || ip link delete ${LXC_BRIDGE}

@@ -1,25 +1,11 @@
 #!/bin/sh
 
+# SPDX-License-Identifier: LGPL-2.1+
+
 # apparmor_mount: test proper handling of apparmor in kernels
 # without mount features
 
 # These require the ubuntu lxc package to be installed.
-
-# This program is free software; you can redistribute it and/or
-# modify it under the terms of the GNU Lesser General Public
-# License as published by the Free Software Foundation; either
-# version 2.1 of the License, or (at your option) any later version.
-
-# This library is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-# Lesser General Public License for more details.
-
-# You should have received a copy of the GNU Lesser General Public
-# License along with this library; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
-
-# This test assumes an Ubuntu host
 
 set -e
 
@@ -54,9 +40,9 @@ run_cmd() {
 
 DONE=0
 MOUNTSR=/sys/kernel/security/apparmor/features/mount
-dnam=`mktemp -d`
-logfile=`mktemp`
-cname=`basename $dnam`
+dnam=$(mktemp -d)
+logfile=$(mktemp)
+cname=$(basename $dnam)
 cleanup() {
 	run_cmd lxc-destroy -f -n $cname || true
 	umount -l $MOUNTSR || true
@@ -91,7 +77,7 @@ chmod 0666 "$logfile"
 # of an empty directory over the securityfs 'mount' directory
 # be removed, we need to do this as non-root.
 
-which newuidmap >/dev/null 2>&1 || { echo "'newuidmap' command is missing" >&2; exit 1; }
+command -v newuidmap >/dev/null 2>&1 || { echo "'newuidmap' command is missing" >&2; exit 1; }
 # create a test user
 TUSER=lxcunpriv
 HDIR=/home/$TUSER
@@ -119,42 +105,13 @@ chown -R $TUSER: /run/user/$(id -u $TUSER)
 
 cd $HDIR
 
-if which cgm >/dev/null 2>&1; then
-	cgm create all $TUSER
-	cgm chown all $TUSER $(id -u $TUSER) $(id -g $TUSER)
-	cgm movepid all $TUSER $$
-elif [ -e /sys/fs/cgroup/cgmanager/sock ]; then
-	for d in $(cut -d : -f 2 /proc/self/cgroup); do
-		dbus-send --print-reply --address=unix:path=/sys/fs/cgroup/cgmanager/sock \
-			--type=method_call /org/linuxcontainers/cgmanager org.linuxcontainers.cgmanager0_0.Create \
-			string:$d string:$TUSER >/dev/null
-
-		dbus-send --print-reply --address=unix:path=/sys/fs/cgroup/cgmanager/sock \
-			--type=method_call /org/linuxcontainers/cgmanager org.linuxcontainers.cgmanager0_0.Chown \
-			string:$d string:$TUSER int32:$(id -u $TUSER) int32:$(id -g $TUSER) >/dev/null
-
-		dbus-send --print-reply --address=unix:path=/sys/fs/cgroup/cgmanager/sock \
-			--type=method_call /org/linuxcontainers/cgmanager org.linuxcontainers.cgmanager0_0.MovePid \
-			string:$d string:$TUSER int32:$$ >/dev/null
-	done
-else
-	for d in /sys/fs/cgroup/*; do
-		[ "$d" = "/sys/fs/cgroup/unified" ] && continue
-		[ -f $d/cgroup.clone_children ] && echo 1 > $d/cgroup.clone_children
-		[ ! -d $d/lxctest ] && mkdir $d/lxctest
-		chown -R $TUSER: $d/lxctest
-		echo $$ > $d/lxctest/tasks
-	done
-fi
-
-
 run_cmd lxc-create -t busybox -n $cname
 
 echo "test default confined container"
 run_cmd lxc-start -n $cname -d -lDEBUG -o "$logfile"
 run_cmd lxc-wait -n $cname -s RUNNING
-pid=`run_cmd lxc-info -p -H -n $cname`
-profile=`cat /proc/$pid/attr/current`
+pid=$(run_cmd lxc-info -p -H -n $cname)
+profile=$(cat /proc/$pid/attr/current)
 if [ "x$profile" != "x${default_profile}" ]; then
 	echo "FAIL: confined container was in profile $profile"
 	exit 1
@@ -166,8 +123,8 @@ echo "test regular unconfined container"
 echo "lxc.apparmor.profile = unconfined" >> $HDIR/.local/share/lxc/$cname/config
 run_cmd lxc-start -n $cname -d -lDEBUG -o "$logfile"
 run_cmd lxc-wait -n $cname -s RUNNING
-pid=`run_cmd lxc-info -p -H -n $cname`
-profile=`cat /proc/$pid/attr/current`
+pid=$(run_cmd lxc-info -p -H -n $cname)
+profile=$(cat /proc/$pid/attr/current)
 if [ "x$profile" != "xunconfined" ]; then
 	echo "FAIL: unconfined container was in profile $profile"
 	exit 1
@@ -182,7 +139,7 @@ echo "test default confined container"
 sed -i '/apparmor.profile/d' $HDIR/.local/share/lxc/$cname/config
 run_cmd lxc-start -n $cname -d || true
 sleep 3
-pid=`run_cmd lxc-info -p -H -n $cname` || true
+pid=$(run_cmd lxc-info -p -H -n $cname) || true
 if [ -n "$pid" -a "$pid" != "-1" ]; then
 	echo "FAIL: confined container started without mount restrictions"
 	echo "pid was $pid"
@@ -193,12 +150,12 @@ echo "test regular unconfined container"
 echo "lxc.apparmor.profile = unconfined" >> $HDIR/.local/share/lxc/$cname/config
 run_cmd lxc-start -n $cname -d -lDEBUG -o "$logfile"
 run_cmd lxc-wait -n $cname -s RUNNING
-pid=`run_cmd lxc-info -p -H -n $cname`
+pid=$(run_cmd lxc-info -p -H -n $cname)
 if [ "$pid" = "-1" ]; then
 	echo "FAIL: unconfined container failed to start without mount restrictions"
 	exit 1
 fi
-profile=`cat /proc/$pid/attr/current`
+profile=$(cat /proc/$pid/attr/current)
 if [ "x$profile" != "xunconfined" ]; then
 	echo "FAIL: confined container was in profile $profile"
 	exit 1
@@ -211,12 +168,12 @@ sed -i '/apparmor.profile/d' $HDIR/.local/share/lxc/$cname/config
 echo "lxc.apparmor.allow_incomplete = 1" >> $HDIR/.local/share/lxc/$cname/config
 run_cmd lxc-start -n $cname -d -lDEBUG -o "$logfile"
 run_cmd lxc-wait -n $cname -s RUNNING
-pid=`run_cmd lxc-info -p -H -n $cname`
+pid=$(run_cmd lxc-info -p -H -n $cname)
 if [ "$pid" = "-1" ]; then
 	echo "FAIL: excepted container failed to start without mount restrictions"
 	exit 1
 fi
-profile=`cat /proc/$pid/attr/current`
+profile=$(cat /proc/$pid/attr/current)
 if [ "x$profile" != "x${default_profile}" ]; then
 	echo "FAIL: confined container was in profile $profile"
 	exit 1

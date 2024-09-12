@@ -40,6 +40,7 @@
 #include "memory_utils.h"
 #include "mount_utils.h"
 #include "namespace.h"
+#include "open_utils.h"
 #include "process_utils.h"
 #include "sync.h"
 #include "syscall_wrappers.h"
@@ -409,8 +410,8 @@ static int get_attach_context(struct attach_context *ctx,
 		SYSERROR("Failed to retrieve namespace flags");
 	ctx->ns_clone_flags = ret;
 
-	ctx->core_sched_cookie = core_scheduling_cookie_get(ctx->init_pid);
-	if (!core_scheduling_cookie_valid(ctx->core_sched_cookie))
+	ret = core_scheduling_cookie_get(ctx->init_pid, &ctx->core_sched_cookie);
+	if (ret || !core_scheduling_cookie_valid(ctx->core_sched_cookie))
 		INFO("Container does not run in a separate core scheduling domain");
 	else
 		INFO("Container runs in separate core scheduling domain %llu",
@@ -1155,9 +1156,9 @@ __noreturn static void do_attach(struct attach_payload *ap)
 			goto on_error;
 		}
 
-		core_sched_cookie = core_scheduling_cookie_get(getpid());
-		if (!core_scheduling_cookie_valid(core_sched_cookie) &&
-		    ctx->core_sched_cookie != core_sched_cookie) {
+		ret = core_scheduling_cookie_get(getpid(), &core_sched_cookie);
+		if (ret || !core_scheduling_cookie_valid(core_sched_cookie) ||
+		    (ctx->core_sched_cookie != core_sched_cookie)) {
 			SYSERROR("Invalid core scheduling domain cookie %llu != %llu",
 				 (llu)core_sched_cookie,
 				 (llu)ctx->core_sched_cookie);
@@ -1318,7 +1319,7 @@ __noreturn static void do_attach(struct attach_payload *ap)
 	 * here, ignore errors.
 	 */
 	for (int fd = STDIN_FILENO; fd <= STDERR_FILENO; fd++) {
-		ret = fd_cloexec(fd, false);
+		ret = lxc_fd_cloexec(fd, false);
 		if (ret < 0) {
 			SYSERROR("Failed to clear FD_CLOEXEC from file descriptor %d", fd);
 			goto on_error;
@@ -1827,6 +1828,7 @@ int lxc_attach_run_command(void *payload)
 	ret = execvp(cmd->program, cmd->argv);
 	if (ret < 0) {
 		switch (errno) {
+		case EACCES:
 		case ENOEXEC:
 			ret = 126;
 			break;

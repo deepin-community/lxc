@@ -27,7 +27,9 @@ static char *api_extensions[] = {
 	"cgroup_relative",
 	"mount_injection_file",
 	"seccomp_allow_nesting",
+#ifdef HAVE_DECL_SECCOMP_NOTIFY_FD
 	"seccomp_notify",
+#endif /* HAVE_DECL_SECCOMP_NOTIFY_FD */
 	"network_veth_routes",
 	"network_ipvlan",
 	"network_l2proxy",
@@ -37,13 +39,19 @@ static char *api_extensions[] = {
 	"cgroup2_devices",
 	"cgroup2",
 	"pidfd",
+	"cgroup_advanced_isolation",
+	"network_bridge_vlan",
+	"time_namespace",
 	"seccomp_allow_deny_syntax",
 	"devpts_fd",
+#ifdef HAVE_DECL_SECCOMP_NOTIFY_FD
 	"seccomp_notify_fd_active",
 	"seccomp_proxy_send_notify_fd",
+#endif /* HAVE_DECL_SECCOMP_NOTIFY_FD */
 	"idmapped_mounts",
 	"idmapped_mounts_v2",
 	"core_scheduling",
+	"cgroup2_auto_mounting",
 };
 
 static size_t nr_api_extensions = sizeof(api_extensions) / sizeof(*api_extensions);

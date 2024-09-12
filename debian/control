@@ -4,27 +4,30 @@ Priority: optional
 Maintainer: pkg-lxc <pkg-lxc-devel@lists.alioth.debian.org>
 Uploaders: Antonio Terceiro <terceiro@debian.org>,
            Evgeni Golov <evgeni@debian.org>,
-           Pierre-Elliott Bécue <peb@debian.org>
+           Pierre-Elliott Bécue <peb@debian.org>,
+           Mathias Gibbens <gibmat@debian.org>
 Build-Depends: bash-completion,
                debhelper-compat (= 13),
                dh-apparmor,
-               dh-exec,
                docbook2x,
                doxygen,
                graphviz,
                libapparmor-dev,
                libcap-dev,
+               libdbus-1-dev,
                libgnutls28-dev,
-               liblua5.2-dev,
                libpam0g-dev,
-               libseccomp-dev [!alpha !hppa !m68k !sh4 !sparc64],
+               libseccomp-dev [!alpha !ia64 !m68k !sh4 !sparc64],
                libselinux-dev,
                linux-libc-dev,
-               pkg-config
-Standards-Version: 4.6.0
+               meson (>= 0.61),
+               pkgconf,
+               systemd-dev
+Standards-Version: 4.7.0
 Homepage: https://linuxcontainers.org/
 Vcs-Git: https://salsa.debian.org/lxc-team/lxc.git
 Vcs-Browser: https://salsa.debian.org/lxc-team/lxc
+Rules-Requires-Root: binary-targets
 
 Package: lxc
 Architecture: linux-any
@@ -32,22 +35,25 @@ Pre-Depends: ${misc:Pre-Depends}
 Depends: dnsmasq-base,
          iproute2,
          liblxc-common (= ${binary:Version}),
-         lsb-base (>= 3.0-6),
          nftables | iptables,
          ${misc:Depends},
          ${shlibs:Depends}
-Recommends: apparmor,
+Recommends: apparmor (>= 3.0.10),
             debootstrap,
             dirmngr,
+            distrobuilder,
             gnupg,
             libpam-cgfs,
-            lxc-templates (>= 3.0.2-1),
-            lxcfs (>= 3.0.2-1),
+            lxcfs,
             openssl,
             rsync,
             uidmap,
             wget
-Suggests: btrfs-progs, lvm2, python3-lxc
+Suggests: btrfs-progs,
+          criu,
+          lvm2,
+          lxc-templates,
+          python3-lxc
 Description: Linux Containers userspace tools
  Containers are insulated areas inside a system, which have their own namespace
  for filesystem, network, PID, IPC, CPU and memory allocation and which can be
@@ -61,11 +67,14 @@ Description: Linux Containers userspace tools
 Package: lxc-dev
 Section: libdevel
 Architecture: linux-any
-Depends: liblxc1 (= ${binary:Version}),
+Depends: libcap-dev,
+         libdbus-1-dev,
+         liblxc1t64 (= ${binary:Version}),
+         libseccomp-dev [!alpha !ia64 !m68k !sh4 !sparc64],
+         libselinux-dev,
          lxc (= ${binary:Version}),
          ${misc:Depends},
          ${shlibs:Depends}
-Breaks: lxc (<< 1:3.0.2-1~exp+1)
 Description: Linux Containers userspace tools (development)
  Containers are insulated areas inside a system, which have their own namespace
  for filesystem, network, PID, IPC, CPU and memory allocation and which can be
@@ -76,12 +85,10 @@ Description: Linux Containers userspace tools (development)
 
 Package: lxc-tests
 Architecture: linux-any
-Depends: liblxc1 (= ${binary:Version}),
+Depends: liblxc1t64 (= ${binary:Version}),
          lxc (= ${binary:Version}),
          ${misc:Depends},
          ${shlibs:Depends}
-Replaces: lxc-dev (<< 1:3.0.2-1~exp+1)
-Breaks: lxc-dev (<< 1:3.0.2-1~exp+1)
 Description: Linux Containers userspace tools (test binaries)
  Containers are insulated areas inside a system, which have their own namespace
  for filesystem, network, PID, IPC, CPU and memory allocation and which can be
@@ -92,12 +99,14 @@ Description: Linux Containers userspace tools (test binaries)
  used for autopkgtest and by some developers. They are not meant to be
  installed on regular user systems.
 
-Package: liblxc1
+Package: liblxc1t64
+Provides: ${t64:Provides}
+Replaces: liblxc1
+Breaks: liblxc1 (<< ${source:Version})
 Section: libs
 Architecture: linux-any
 Multi-Arch: same
 Depends: ${misc:Depends}, ${shlibs:Depends}
-Breaks: lxc (<< 1:3.0.2-1~exp+1)
 Suggests: cgroupfs-mount | systemd
 Description: Linux Containers userspace tools (library)
  Containers are insulated areas inside a system, which have their own namespace
@@ -110,7 +119,7 @@ Description: Linux Containers userspace tools (library)
 Package: liblxc-common
 Section: libs
 Architecture: linux-any
-Depends: liblxc1 (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Depends: liblxc1t64 (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
 Breaks: lxc (<< 1:4.0.11-1~)
 Replaces: lxc (<< 1:4.0.11-1~)
 Description: Linux Containers userspace tools (library)
@@ -125,7 +134,7 @@ Package: libpam-cgfs
 Architecture: linux-any
 Multi-Arch: same
 Pre-Depends: ${misc:Pre-Depends}
-Depends: libpam-runtime (>= 1.0.1-6),
+Depends: libpam-runtime,
          ${lxcfs:Depends},
          ${misc:Depends},
          ${shlibs:Depends}

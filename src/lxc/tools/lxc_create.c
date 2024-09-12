@@ -190,7 +190,8 @@ static bool validate_bdev_args(struct lxc_arguments *args)
 	return true;
 }
 
-int main(int argc, char *argv[])
+int __attribute__((weak, alias("lxc_create_main"))) main(int argc, char *argv[]);
+int lxc_create_main(int argc, char *argv[])
 {
 	struct lxc_container *c;
 	struct bdev_specs spec;
@@ -236,7 +237,7 @@ int main(int argc, char *argv[])
 	/* Final check whether the user gave use a valid bdev type. */
 	if (strncmp(my_args.bdevtype, "best", strlen(my_args.bdevtype)) != 0 &&
 	    strncmp(my_args.bdevtype, "_unset", strlen(my_args.bdevtype)) != 0 &&
-	    !is_valid_storage_type(my_args.bdevtype)) {
+	    !lxc_is_valid_storage_type(my_args.bdevtype)) {
 		ERROR("%s is not a valid backing storage type", my_args.bdevtype);
 		exit(EXIT_FAILURE);
 	}
@@ -244,7 +245,7 @@ int main(int argc, char *argv[])
 	if (!my_args.lxcpath[0])
 		my_args.lxcpath[0] = lxc_get_global_config_item("lxc.lxcpath");
 
-	if (mkdir_p(my_args.lxcpath[0], 0755))
+	if (lxc_mkdir_p(my_args.lxcpath[0], 0755))
 		exit(EXIT_FAILURE);
 
 	if (geteuid())

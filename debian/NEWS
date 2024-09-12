@@ -1,6 +1,6 @@
 lxc (1:4.0.6-2) unstable; urgency=medium
 
-  * A new way of handling unprivileged containers starting and attachment has
+    A new way of handling unprivileged containers starting and attachment has
     been made available through the lxc-unpriv-start and lxc-unpriv-attach
     commands. See /usr/share/doc/lxc/README.Debian.gz for more details.
 

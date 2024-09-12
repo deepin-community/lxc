@@ -1,4 +1,2 @@
-0004-apparmor.d-Sets-container-base-accordingly-to-container-base.in.patch
-0005-lxc.service-Starts-after-remote-fs.target.patch
-0006-lxc.pc.in-removes-DLOG_LIBS-which-is-not-expanded-up.patch
-0004-lxc-net-don-t-start-by-default-inside-lxc.patch
+0002-nesting-Extend-mount-permissions-in-apparmor-to-allo.patch
+0003-lxc.service-Starts-after-remote-fs.target.patch

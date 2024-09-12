@@ -3,9 +3,6 @@
 #ifndef __LXC_UTILS_H
 #define __LXC_UTILS_H
 
-/* Properly support loop devices on 32bit systems. */
-#define _FILE_OFFSET_BITS 64
-
 #include <errno.h>
 #include <linux/loop.h>
 #include <linux/types.h>
@@ -29,7 +26,7 @@
 /* returns 1 on success, 0 if there were any failures */
 __hidden extern int lxc_rmdir_onedev(const char *path, const char *exclude);
 __hidden extern int get_u16(unsigned short *val, const char *arg, int base);
-__hidden extern int mkdir_p(const char *dir, mode_t mode);
+__hidden extern int lxc_mkdir_p(const char *dir, mode_t mode);
 __hidden extern char *get_rundir(void);
 
 /* Define getline() if missing from the C library */
@@ -78,12 +75,17 @@ static inline void __auto_lxc_pclose__(struct lxc_popen_FILE **f)
 }
 #define __do_lxc_pclose __attribute__((__cleanup__(__auto_lxc_pclose__)))
 
+__hidden extern int run_script(const char *name, const char *section, const char *script, ...);
+__hidden extern int run_script_argv(const char *name, unsigned int hook_version, const char *section,
+				    const char *script, const char *hookname, char **argsin);
+
 /*
  * wait on a child we forked
  */
 __hidden extern int wait_for_pid(pid_t pid);
 __hidden extern int lxc_wait_for_pid_status(pid_t pid);
 __hidden extern int wait_for_pidfd(int pidfd);
+__hidden extern bool wait_exited(pid_t pid);
 
 #if HAVE_OPENSSL
 __hidden extern int sha1sum_file(char *fnam, unsigned char *md_value, unsigned int *md_len);
@@ -238,13 +240,13 @@ static inline bool gid_valid(gid_t gid)
 	return gid != LXC_INVALID_GID;
 }
 
-__hidden extern bool multiply_overflow(int64_t base, uint64_t mult, int64_t *res);
-
 __hidden extern int safe_mount_beneath(const char *beneath, const char *src, const char *dst,
 				       const char *fstype, unsigned int flags, const void *data);
 __hidden extern int safe_mount_beneath_at(int beneat_fd, const char *src, const char *dst,
 					  const char *fstype, unsigned int flags, const void *data);
 __hidden __lxc_unused int print_r(int fd, const char *path);
+
+__hidden extern uint64_t get_fssize(char *s);
 
 static inline int copy_struct_from_client(__u32 server_size, void *dst,
 					  __u32 client_size, const void *src)

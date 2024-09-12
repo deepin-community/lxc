@@ -6,7 +6,7 @@ etc/default
 etc/init.d
 etc/lxc
 etc/sysctl.d
-lib
+${env:systemdsystemunitdir}
 usr/bin
 usr/libexec/lxc/lxc-containers
 usr/libexec/lxc/lxc-net

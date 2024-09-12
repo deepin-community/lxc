@@ -15,6 +15,10 @@
 #include "macro.h"
 #include "mainloop.h"
 
+#if HAVE_LIBURING
+#include <liburing.h>
+#endif
+
 lxc_log_define(mainloop, lxc);
 
 #define CANCEL_RECEIVED (1 << 0)
@@ -108,7 +112,7 @@ static inline int __io_uring_open(struct lxc_async_descr *descr)
 	return ret_errno(ENOSYS);
 }
 
-#else
+#else /* !HAVE_LIBURING */
 
 static inline int __io_uring_open(struct lxc_async_descr *descr)
 {
@@ -159,6 +163,16 @@ static int __io_uring_arm(struct lxc_async_descr *descr,
 	io_uring_prep_poll_add(sqe, handler->fd, EPOLLIN);
 
 	/*
+	 * FIXME: workaround an issue with false-positive
+	 * io_uring POLL events when multishot mode is enabled.
+	 *
+	 * It's safe to override oneshot argument here, execution
+	 * will go to the same codepath as if kernel lacks IORING_POLL_ADD_MULTI
+	 * mode support.
+	 */
+	oneshot = true;
+
+	/*
 	 * Raise IORING_POLL_ADD_MULTI to set up a multishot poll. The same sqe
 	 * will now produce multiple cqes. A cqe produced from a multishot sqe
 	 * will raise IORING_CQE_F_MORE in cqe->flags.
@@ -201,7 +215,7 @@ static int __io_uring_disarm(struct lxc_async_descr *descr,
 		return syserror_set(ENOENT,
 				    "Failed to get submission queue entry");
 
-	io_uring_prep_poll_remove(sqe, handler);
+	io_uring_prep_poll_remove(sqe, PTR_TO_U64(handler));
 	io_uring_sqe_set_data(sqe, handler);
 	ret = io_uring_submit(descr->ring);
 	if (ret < 0)
@@ -315,7 +329,7 @@ static int __lxc_mainloop_io_uring(struct lxc_async_descr *descr, int timeout_ms
 			return error_ret(0, "Closing because there are no more handlers");
 	}
 }
-#endif
+#endif /* HAVE_LIBURING */
 
 static int __lxc_mainloop_epoll(struct lxc_async_descr *descr, int timeout_ms)
 {
@@ -515,8 +529,10 @@ void lxc_mainloop_close(struct lxc_async_descr *descr)
 
 	if (descr->type == LXC_MAINLOOP_IO_URING) {
 #if HAVE_LIBURING
-		io_uring_queue_exit(descr->ring);
-		munmap(descr->ring, sizeof(struct io_uring));
+		if (descr->ring) {
+			io_uring_queue_exit(descr->ring);
+			munmap(descr->ring, sizeof(struct io_uring));
+		}
 #else
 		ERROR("Unsupported io_uring mainloop");
 #endif

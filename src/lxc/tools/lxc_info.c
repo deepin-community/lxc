@@ -81,6 +81,8 @@ Options :\n\
 	.options  = my_longopts,
 	.parser   = my_parser,
 	.checker  = NULL,
+	.log_priority = "ERROR",
+	.log_file     = "none",
 };
 
 static void str_chomp(char *buf)
@@ -388,7 +390,8 @@ static int print_info(const char *name, const char *lxcpath)
 	return 0;
 }
 
-int main(int argc, char *argv[])
+int __attribute__((weak, alias("lxc_info_main"))) main(int argc, char *argv[]);
+int lxc_info_main(int argc, char *argv[])
 {
 	int ret = EXIT_FAILURE;
 	struct lxc_log log;
