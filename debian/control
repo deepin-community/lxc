@@ -69,7 +69,7 @@ Section: libdevel
 Architecture: linux-any
 Depends: libcap-dev,
          libdbus-1-dev,
-         liblxc1t64 (= ${binary:Version}),
+         liblxc1 (= ${binary:Version}),
          libseccomp-dev [!alpha !ia64 !m68k !sh4 !sparc64],
          libselinux-dev,
          lxc (= ${binary:Version}),
@@ -85,7 +85,7 @@ Description: Linux Containers userspace tools (development)
 
 Package: lxc-tests
 Architecture: linux-any
-Depends: liblxc1t64 (= ${binary:Version}),
+Depends: liblxc1 (= ${binary:Version}),
          lxc (= ${binary:Version}),
          ${misc:Depends},
          ${shlibs:Depends}
@@ -99,10 +99,7 @@ Description: Linux Containers userspace tools (test binaries)
  used for autopkgtest and by some developers. They are not meant to be
  installed on regular user systems.
 
-Package: liblxc1t64
-Provides: ${t64:Provides}
-Replaces: liblxc1
-Breaks: liblxc1 (<< ${source:Version})
+Package: liblxc1
 Section: libs
 Architecture: linux-any
 Multi-Arch: same
@@ -119,7 +116,7 @@ Description: Linux Containers userspace tools (library)
 Package: liblxc-common
 Section: libs
 Architecture: linux-any
-Depends: liblxc1t64 (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Depends: liblxc1 (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
 Breaks: lxc (<< 1:4.0.11-1~)
 Replaces: lxc (<< 1:4.0.11-1~)
 Description: Linux Containers userspace tools (library)
