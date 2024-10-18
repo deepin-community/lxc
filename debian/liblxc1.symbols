@@ -1,4 +1,4 @@
-liblxc.so.1 liblxc1t64 #MINVER#
+liblxc.so.1 liblxc1 #MINVER#
 * Build-Depends-Package: lxc-dev
 #MISSING: 1:4.0.4# __cgfsng_delegate_controllers@Base 1:4.0.2
 #MISSING: 1:4.0.4# __criu_check_feature@Base 1:3.0.2
@@ -268,7 +268,7 @@ liblxc.so.1 liblxc1t64 #MINVER#
 #MISSING: 1:4.0.4# lxc_get_conf_int@Base 1:3.0.2
 #MISSING: 1:4.0.4# lxc_get_conf_size_t@Base 1:3.0.2
 #MISSING: 1:4.0.4# lxc_get_conf_str@Base 1:3.0.2
-#MISSING: 1:4.0.4# lxc_get_conf_uint64@Base 1:3.0.2
+#MISSING: 1:4.0.4# lxc_get_conf_uin@Base 1:3.0.2
 #MISSING: 1:4.0.4# lxc_get_config@Base 1:3.0.2
  lxc_get_global_config_item@Base 1:3.0.2
 #MISSING: 1:4.0.4# lxc_get_netdev_by_idx@Base 1:3.0.2
@@ -466,7 +466,7 @@ liblxc.so.1 liblxc1t64 #MINVER#
 #MISSING: 1:4.0.4# lxc_safe_int@Base 1:3.0.2
 #MISSING: 1:4.0.4# lxc_safe_long@Base 1:3.0.2
 #MISSING: 1:4.0.4# lxc_safe_long_long@Base 1:3.0.2
-#MISSING: 1:4.0.4# lxc_safe_uint64@Base 1:3.0.2
+#MISSING: 1:4.0.4# lxc_safe_uin@Base 1:3.0.2
 #MISSING: 1:4.0.4# lxc_safe_uint@Base 1:3.0.2
 #MISSING: 1:4.0.4# lxc_safe_ulong@Base 1:3.0.2
 #MISSING: 1:4.0.4# lxc_seccomp_add_notifier@Base 1:4.0.2
